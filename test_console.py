@@ -1002,6 +1002,8 @@ class EOLTesterGUI:
         for line in self.spec_lines:
             line.destroy()
         self.spec_lines = []
+        if not items:
+            return      # borders only once a part's specs are loaded
 
         def line(**place):
             mark = tk.Frame(tree, bg=self.SPEC_LINE)
@@ -1010,10 +1012,9 @@ class EOLTesterGUI:
 
         # Where the first row starts is where the heading really ends
         top = header
-        if items:
-            box = tree.bbox(items[0])
-            if box:
-                top = box[1]
+        box = tree.bbox(items[0])
+        if box:
+            top = box[1]
         line(x=0, y=top - 1, relwidth=1, height=1)
         for index in range(1, len(items) + 1):
             y = top + index * row_height - 1
