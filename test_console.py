@@ -601,9 +601,11 @@ class EOLTesterGUI:
     # Height of each camera's live picture, at full screen scale
     LIVE_HEIGHT = 120
     # Screen height taken by everything but the part image: title, footer,
-    # part header, label row, lamps, window chrome, and the least the charts
-    # and results grid below can work with.
-    CHROME_HEIGHT = 590
+    # part header, lamps, window chrome, and the least the charts and results
+    # grid below can work with. On a 1080 screen this leaves the image about
+    # the height the specification grid and cameras beside it need, so the
+    # three charts get the rest.
+    CHROME_HEIGHT = 760
 
     def setup_window(self):
         """Set up the window after initialization"""
