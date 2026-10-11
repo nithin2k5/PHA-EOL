@@ -850,25 +850,15 @@ class EOLTesterGUI:
         self.image_frame = tk.Frame(picture, bg='white',
                                     width=round(self.IMAGE_WIDTH * self.image_scale),
                                     height=round(self.IMAGE_HEIGHT * self.image_scale))
-        self.image_frame.pack(pady=(4, 0))
+        self.image_frame.pack(pady=4)
         self.image_frame.pack_propagate(False)
         self.show_image_placeholder()
 
-        # The labels a part can use. One moves up onto the image while its
-        # part is loaded, as it does in Model Settings.
-        # They show their names from partlabels.txt.
+        # Names for the labels a part places on the image, from partlabels.txt.
+        # Labels the part does not use are not shown.
         self.label_names, label_problem = data_files.part_label_names()
         if label_problem:
             print(f"Warning: {label_problem}; the labels show L1-L{self.LABEL_COUNT}")
-        row = tk.Frame(picture, bg='white')
-        row.pack(fill="x", padx=8, pady=(2, 4))
-        self.label_row = {}
-        for number in range(1, self.LABEL_COUNT + 1):
-            key = f"L{number}"
-            tag = tk.Label(row, text=self.label_names[key], bg='white', fg='black',
-                           font=(self.FONT, 11, 'bold'))
-            tag.pack(side="left", padx=(0, 12))
-            self.label_row[key] = tag
 
         lamps = tk.Frame(panel, bg=self.PANEL)
         lamps.pack(fill="x", pady=(4, 0))
@@ -1544,11 +1534,6 @@ class EOLTesterGUI:
                                     font=(self.FONT, 14, 'bold'))
         self.image_label.place(relx=0.5, rely=0.5, anchor='center')
 
-    def update_label_row(self):
-        """Blank each label in the row under the image while it sits on the image."""
-        for key, tag in self.label_row.items():
-            tag.configure(fg='white' if key in self.placed_labels else 'black')
-
     def update_camera_status(self, status_values):
         """Show camera 1's verdict from its OK, NG and ON/OFF coils.
 
@@ -2009,7 +1994,6 @@ class EOLTesterGUI:
             self.placed_labels = {}
             self.sensor_label_keys = []
             self.sensor_states = {}
-            self.update_label_row()
 
             # next_model_command() disabled this while the closing NG cable
             # check ran; with the part released, the next one can use it.
@@ -2972,8 +2956,6 @@ class EOLTesterGUI:
             # Hand the worker thread the sensors to read for these labels
             self.sensor_states = {}
             self.sensor_label_keys = list(self.placed_labels)
-            
-            self.update_label_row()
                 
         except Exception as e:
             print(f"Error placing labels: {e}")
