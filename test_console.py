@@ -966,6 +966,7 @@ class EOLTesterGUI:
     SPEC_ROW_HEIGHT = 30        # rows when no part is loaded
     SPEC_ROW_MIN = 20           # the least a row shrinks to, so a long spec still fits
     SPEC_LINE = '#808080'
+    SPEC_RESULT_INK = {"PASS": '#0000FF', "NG": '#E00000'}
 
     def fit_spec_grid_soon(self):
         """Fit the grid once the layout settles; resizes come in bursts."""
@@ -1025,6 +1026,23 @@ class EOLTesterGUI:
         for column in tree['columns'][:-1]:
             x += tree.column(column, 'width')
             line(x=x - 1, y=0, width=1, relheight=1)
+
+        # The rows stay white; only each result is coloured, written over
+        # its own cell. The grid keeps the value underneath for scoring.
+        columns = tree['columns']
+        result_column = columns.index("Result")
+        result_x = sum(tree.column(c, 'width') for c in columns[:result_column])
+        result_width = tree.column("Result", 'width')
+        for index, item in enumerate(items):
+            result = tree.item(item, 'values')[result_column]
+            ink = self.SPEC_RESULT_INK.get(result)
+            if not ink:
+                continue
+            mark = tk.Label(tree, text=result, bg='white', fg=ink,
+                            font=(self.FONT, 13, 'bold'))
+            mark.place(x=result_x, y=top + index * row_height,
+                       width=result_width - 1, height=row_height - 1)
+            self.spec_lines.append(mark)
 
     def create_third_quadrant(self):
         """The load and length trend charts and the UPH chart, stacked on black."""
@@ -4716,6 +4734,7 @@ class EOLTesterGUI:
                     values[-2] = ""  # Actual
                     values[-1] = ""  # Result
                     self.spec_tree.item(item, values=values, tags=('neutral',))
+            self.fit_spec_grid_soon()   # takes the coloured results off
         except Exception as e:
             print(f"Error resetting specification grid: {e}")
 
@@ -5167,13 +5186,13 @@ class EOLTesterGUI:
             if not hasattr(self, 'spec_tree') or not self.spec_tree:
                 return False
                 
-            # Configure color tags if not already done
+            # Rows stay white whatever the result; fit_spec_grid() colours
+            # the Result text alone
             if not hasattr(self, 'spec_color_tags_configured'):
-                self.spec_tree.tag_configure('pass', background='#90EE90')  # Light green for PASS
-                self.spec_tree.tag_configure('ng', background='#FFCCCB')    # Light red for NG
-                self.spec_tree.tag_configure('neutral', background='#FFFFFF')  # White for neutral
+                for tag in ('pass', 'ng', 'neutral'):
+                    self.spec_tree.tag_configure(tag, background='#FFFFFF')
                 self.spec_color_tags_configured = True
-                
+
             # Loop through all rows in the spec tree
             for item in self.spec_tree.get_children():
                 values = list(self.spec_tree.item(item, "values"))
@@ -5210,8 +5229,8 @@ class EOLTesterGUI:
                     # Update the tree item with new values
                     self.spec_tree.item(item, values=values)
                     
-                    # Apply tag to color the row according to result
                     self.spec_tree.item(item, tags=(result_tag,))
+                    self.fit_spec_grid_soon()   # colours the new result
 
                     return True
             
