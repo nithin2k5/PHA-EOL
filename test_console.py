@@ -3375,9 +3375,8 @@ class EOLTesterGUI:
                 print("⏳ Waiting for PLC to return to pull1 state before starting test...")
                 self.wait_for_pull1_and_start_test()
                 
-                # Reset ALC entry field for next entry
-                self.alc_entry.configure(state='normal')
-                self.show_placeholder(self.alc_entry, self.ALC_PLACEHOLDER)
+                # The ALC code stays on show, read-only, while its part is
+                # loaded; releasing the part clears it for the next login
                 
             else:
                 messagebox.showwarning("Part Not Found", "Scanned Part Does NOT Exist...")
@@ -5113,6 +5112,9 @@ class EOLTesterGUI:
                                  "Please validate your Employee ID before entering Part Number")
             return
         
+        if str(self.alc_entry.cget('state')) != 'normal':
+            return      # a part is loaded; its code is only on show
+
         # Use the value from the entry field
         alc_code = self.alc_entry.get().strip()
         
@@ -5159,29 +5161,6 @@ class EOLTesterGUI:
         except Exception as e:
             print(f"Error resetting process status labels: {e}")
     
-    def flash_spec_row(self, item, final_tag):
-        """Briefly flash a row to highlight it was updated"""
-        # Store original tag
-        original_tag = final_tag
-        
-        # Flash sequence: highlight → original → highlight → original
-        def flash_sequence(count=0):
-            if count >= 4:  # End after 4 changes
-                self.spec_tree.item(item, tags=(original_tag,))
-                return
-                
-            # Toggle between highlight and original
-            if count % 2 == 0:
-                self.spec_tree.item(item, tags=('value',))  # Highlight with blue
-            else:
-                self.spec_tree.item(item, tags=(original_tag,))  # Backm to original
-                
-            # Schedule next flash
-            self.root.after(250, lambda: flash_sequence(count + 1))
-            
-        # Start the flash sequence
-        flash_sequence()
-
     def update_specification_result(self, device_name, value, result_tag=""):
         """Update specification tree with actual value and result for a specific device"""
         try:
@@ -5193,7 +5172,6 @@ class EOLTesterGUI:
                 self.spec_tree.tag_configure('pass', background='#90EE90')  # Light green for PASS
                 self.spec_tree.tag_configure('ng', background='#FFCCCB')    # Light red for NG
                 self.spec_tree.tag_configure('neutral', background='#FFFFFF')  # White for neutral
-                self.spec_tree.tag_configure('value', background='#ADD8E6')  # Light blue for values
                 self.spec_color_tags_configured = True
                 
             # Loop through all rows in the spec tree
@@ -5201,9 +5179,6 @@ class EOLTesterGUI:
                 values = list(self.spec_tree.item(item, "values"))
                 # Check if the device column matches the requested device
                 if len(values) > 1 and values[1] == device_name:
-                    # Store original values to compare for changes
-                    old_values = values.copy()
-                    
                     # Update the Actual column (second to last column)
                     values[-2] = f"{value}"
                     
@@ -5237,12 +5212,7 @@ class EOLTesterGUI:
                     
                     # Apply tag to color the row according to result
                     self.spec_tree.item(item, tags=(result_tag,))
-                    
-                    # If values changed, apply a visual highlight
-                    if values != old_values:
-                        # Flash the row briefly to highlight the change
-                        self.flash_spec_row(item, result_tag)
-                    
+
                     return True
             
             # Device not found in tree
