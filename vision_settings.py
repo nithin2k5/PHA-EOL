@@ -2381,8 +2381,8 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     `source` names the camera in camera_cfg.ini; by default it is the one
     template matching uses. `check_key` names the vision_config.json
     setting that turns this camera's check of the parts on or off, and adds
-    a box for it; `allow_check_change(window)` is asked before a change to
-    it is saved, and returns False to keep the setting as it was.
+    a box for it; `allow_check_change(window)` is asked when the box is
+    clicked, and returns False to leave it as it was.
     """
     if not _cv2_ok or not _pil_ok:
         messagebox.showerror("Camera", "OpenCV and Pillow are required.", parent=parent)
@@ -2429,13 +2429,26 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     # Whether this camera checks the parts at all
     check_var = tk.BooleanVar(value=True)
     check_was = None
+    check_allowed = {"v": allow_check_change is None}
+
+    def _on_check():
+        # The tick only changes after a login; one login covers the rest of
+        # this dialog, so Save does not ask again
+        if check_allowed["v"]:
+            return
+        wanted = check_var.get()
+        check_var.set(not wanted)
+        if allow_check_change(win):
+            check_allowed["v"] = True
+            check_var.set(wanted)
+
     if check_key:
         v_cfg = load_vision_config()
         # Before each camera had its own setting, one turned both on or off
         check_was = bool(v_cfg.get(check_key, v_cfg.get("vision_enabled", True)))
         check_var.set(check_was)
         ctk.CTkCheckBox(cb_body, text="Check parts with this camera", variable=check_var,
-                        bg_color=PANEL, fg_color=ui.NAVY, hover_color=ui.ACCENT_ACTIVE,
+                        command=_on_check, bg_color=PANEL, fg_color=ui.NAVY, hover_color=ui.ACCENT_ACTIVE,
                         border_color=ui.BORDER_STRONG, text_color=TXT,
                         checkbox_width=22, checkbox_height=22, corner_radius=4,
                         font=(FONT, 11, "bold")).pack(fill="x")
@@ -2576,9 +2589,6 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
         idx = _selected_index()
         w, h = [int(v) for v in res_var.get().split("x")]
         check_now = check_var.get()
-        if check_key and check_now != check_was and allow_check_change is not None:
-            if not allow_check_change(win):
-                return      # the dialog stays open, the box as it was chosen
         if idx >= 0 and stream["s"] is not None and stream["s"].latest() is None:
             if not messagebox.askyesno(
                     "No Preview",
