@@ -16,3 +16,9 @@ vision_captures/
 # Camera devices and vision settings - chosen on each machine
 camera_cfg.ini
 vision_config.json
+
+# Employee login codes - local to each machine
+/EmployeeCodes.txt
+
+# Camera vision model files - kept out of git
+vision_models/
