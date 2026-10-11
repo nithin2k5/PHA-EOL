@@ -3181,8 +3181,9 @@ class EOLTesterGUI:
                 self.current_part_number = self.partNumber
                 self.log_operator_action("PART_LOADED", f"ALC {alc_code}: {self.modelName}")
                 
-                # Start NG cable validation process
-                self.startingNGCableValidation = True
+                # Starting NG cable check switched off for now: the first
+                # cable after loading is tested as a production part
+                # self.startingNGCableValidation = True
                 
                 # Update status message
                 self.safe_update_message(
