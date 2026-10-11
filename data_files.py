@@ -23,6 +23,7 @@ PART_LABELS = 'partlabels.txt'
 PLC_ON_REGISTER = 'PLC_on_register.txt'
 PROCESS_STATUS = 'ProcessStatus.txt'
 PROGRAM_SELECTION_IN_PLC = 'ProgramSelectionInPLC.txt'
+START_BUTTON_PLC_COIL_ADDRESS = 'StartButtonPLCCoilAddress.txt'
 
 
 PART_LABEL_COUNT = 16

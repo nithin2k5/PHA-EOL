@@ -416,6 +416,7 @@ class EOLTesterGUI:
         self.programSelectionPLCAddress = ""
         self.machineOnPLCCoilAddress = ""
         self.alertOnPLCCoilAddress = ""
+        self.startButtonPLCCoilAddress = self.START_BUTTON_ADDRESS
         self.partRunningSerialExists = False
         
         # NG Cable validation flags
@@ -776,6 +777,12 @@ class EOLTesterGUI:
         if not self.write_machine_on_to_plc():
             failed.append(f"Machine On {self.machineOnPLCCoilAddress or '(not set)'}"
                           f" - {self.last_plc_error}")
+        # Pressed only once the rest is in place, so the PLC starts on this part
+        if not failed:
+            self.last_plc_error = not_m_coil
+            if not self.press_start_button_on_plc():
+                failed.append(f"Start {self.startButtonPLCCoilAddress or '(not set)'}"
+                              f" - {self.last_plc_error}")
         if failed:
             messagebox.showerror(
                 "Start Test",
@@ -2335,6 +2342,15 @@ class EOLTesterGUI:
                 print("   This file is REQUIRED for PLC to start test!")
                 self.machineOnPLCCoilAddress = ""
             
+            # Load the START button's coil, which has an address of its own
+            # unless the file names another
+            start_path = data_files.path(data_files.START_BUTTON_PLC_COIL_ADDRESS)
+            self.startButtonPLCCoilAddress = self.START_BUTTON_ADDRESS
+            if os.path.exists(start_path):
+                with open(start_path, 'r') as file:
+                    self.startButtonPLCCoilAddress = file.read().strip()
+            print(f"START button PLC Coil Address: {self.startButtonPLCCoilAddress}")
+
             # Load Alert On PLC Coil Address
             alert_on_path = data_files.path(data_files.ALERT_ON_PLC_COIL_ADDRESS)
             if os.path.exists(alert_on_path):
@@ -3356,6 +3372,32 @@ class EOLTesterGUI:
             return False
         time.sleep(self.MACHINE_ON_OFF_TIME)
         return self.write_named_coil('MACHINE ON', self.machineOnPLCCoilAddress, True)
+
+    # The PLC's START push button, used when StartButtonPLCCoilAddress.txt
+    # is not there, and how long the console holds it pressed
+    START_BUTTON_ADDRESS = "M000A"
+    START_BUTTON_PRESS_TIME = 0.5
+
+    def press_start_button_on_plc(self):
+        """Press and release the PLC's START coil, as the push button would.
+
+        Released even when the press failed part way, so START is never
+        left held on.
+        Returns: bool - Success status
+        """
+        address = self.startButtonPLCCoilAddress
+        if not self.plc_client:
+            self.trace("WRITE START skipped - the PLC is not connected")
+            return False
+        if not address or not address.startswith('M'):
+            self.trace(f"WRITE START skipped - StartButtonPLCCoilAddress.txt holds "
+                       f"'{address}', not an M coil")
+            return False
+        pressed = self.write_named_coil('START', address, True)
+        if pressed:
+            time.sleep(self.START_BUTTON_PRESS_TIME)
+        released = self.write_named_coil('START', address, False)
+        return pressed and released
 
     def display_data(self):
         """Show today's passing results for the current part and refresh the counters."""
