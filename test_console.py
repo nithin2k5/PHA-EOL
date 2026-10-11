@@ -963,6 +963,8 @@ class EOLTesterGUI:
         self.cam2_view = LiveCameraView(group(1, "CAMERA 2"), live_height, self.FONT, self.SKY,
                                         on_click=lambda: self.configure_camera(2))
         self.cam2_view.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.show_camera_idle(1)
+        self.show_camera_idle(2)
 
         # Where the printed label gets scanned back in. It only opens while a
         # freshly printed label is waiting to be checked.
@@ -1875,8 +1877,7 @@ class EOLTesterGUI:
         # It applies from the next test started
         on = self.camera_check_saved(number)
         self.camera_checks[number] = on
-        if number == 1 and not on:
-            self.cam1_view.set_status("OFF", self.SILVER)
+        self.show_camera_idle(number)
         if on != was_on:
             self.log_operator_action(f"CAM{number}_CHECK",
                                      f"{'On' if on else 'Off'} by {self.camera_check_user}")
@@ -1889,6 +1890,14 @@ class EOLTesterGUI:
         """A frame from camera 1, or None if it isn't a USB camera set up here."""
         index, width, height = load_camera_config(self.camera1_source())
         return camera.grab(index, width, height) if index >= 0 else None
+
+    def show_camera_idle(self, number):
+        """Show whether a camera is on or off, until a test gives it PASS or NG."""
+        view = self.cam1_view if number == 1 else self.cam2_view
+        if self.camera_check_on(number):
+            view.set_status("ON", self.SKY)
+        else:
+            view.set_status("OFF", self.SILVER)
 
     def update_cam2_status(self, result):
         """Show camera 2's verdict: PASS, NG, ERROR, OFF or CHECKING."""
@@ -4886,7 +4895,7 @@ class EOLTesterGUI:
         self.rcvdTestRslt = False
         self.cam1Result = ""
         if hasattr(self, 'cam1_view'):
-            self.cam1_view.set_status("STATUS", self.SKY)
+            self.show_camera_idle(1)
             self.cam1_view.resume()
         self.cam2Result = ""
         self.cam1Image = self.cam2Image = None
@@ -4895,7 +4904,7 @@ class EOLTesterGUI:
         self.after_camera_checks_do = None
         self.cam1_by_app = False
         if hasattr(self, 'cam2_view'):
-            self.cam2_view.set_status("STATUS", self.SKY)
+            self.show_camera_idle(2)
             self.cam2_view.resume()
 
     def reset_measurements(self):
