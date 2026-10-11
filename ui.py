@@ -83,6 +83,7 @@ AQUA = '#00FFFF'            # code entry boxes
 YELLOW = '#FFFF00'          # the next-model button, employee code box
 SILVER = '#C0C0C0'
 POWDER = '#B0E0E6'          # counter strips
+LOT_GREEN = '#32CD32'       # lot progress and scan counter panels
 LAMP_PASS = '#00FF00'       # a passed step
 LAMP_FAIL = '#FF4500'       # a failed step
 

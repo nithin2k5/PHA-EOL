@@ -587,6 +587,7 @@ class EOLTesterGUI:
     AQUA = ui.AQUA
     YELLOW = ui.YELLOW
     SILVER = ui.SILVER
+    GREEN = ui.LOT_GREEN        # lot progress and scan counters
     EDGE = ui.BORDER            # thin panel borders
     PLACEHOLDER_INK = '#A9A9A9'
     EMP_PLACEHOLDER = 'EMPLOYEE CODE'
@@ -1035,109 +1036,86 @@ class EOLTesterGUI:
 
         return panel
 
-    def strip_card(self, parent_frame, title):
-        """A white card with a navy title band, for the strip under the results grid.
-
-        Returns the card, its band (for anything shown beside the title)
-        and the body to build in.
-        """
-        card = tk.Frame(parent_frame, bg='white', highlightthickness=1,
-                        highlightbackground=self.EDGE)
-        band = tk.Frame(card, bg=self.NAVY)
-        band.pack(fill="x")
-        tk.Label(band, text=title, bg=self.NAVY, fg='white',
-                 font=(self.FONT, 10, 'bold')).pack(side="left", padx=8, pady=2)
-        body = tk.Frame(card, bg='white')
-        body.pack(fill="both", expand=True, padx=8, pady=(4, 6))
-        return card, band, body
-
     def create_lot_progress(self, parent_frame):
-        """Build the current lot card: count against size, bar, totals and trace codes.
+        """Build the current lot box: OK cables, lot number, progress and trace codes.
 
-        Until the operator sets a lot size only the size box shows; the
-        count and bar join it once there is a size to count towards.
+        Until the operator sets a lot size, Progress shows only the size box;
+        the count and bar join it once there is a size to count towards.
         """
-        card, band, body = self.strip_card(parent_frame, "CURRENT LOT")
-        self.lot_number_label = tk.Label(band, text="", bg=self.NAVY, fg='white',
-                                         font=(self.FONT, 10, 'bold'))
-        self.lot_number_label.pack(side="right", padx=8)
+        font = (self.FONT, 9, 'bold')
+        box = tk.LabelFrame(parent_frame, text="CURRENT LOT PROGRESS", bg=self.GREEN,
+                            fg='black', font=font, bd=1, relief='groove')
 
-        big = (self.FONT, 18, 'bold')
-        small = (self.FONT, 8, 'bold')
-        muted = ui.TEXT_MUTED
+        def line():
+            row = tk.Frame(box, bg=self.GREEN)
+            row.pack(fill="x", padx=6, pady=(0, 2))
+            return row
 
-        # Count / size, then the bar across the middle, then the running total
-        body.grid_columnconfigure(3, weight=1)
-        self.lot_count_label = tk.Label(body, text="", bg='white', fg=self.NAVY, font=big)
+        def caption(row, text):
+            tk.Label(row, text=text, bg=self.GREEN, fg='black', font=font).pack(side="left")
+
+        def value(row, gap=8):
+            label = tk.Label(row, text="", bg=self.GREEN, fg='black', font=font)
+            label.pack(side="left", padx=(2, gap))
+            return label
+
+        first = line()
+        caption(first, "Total OK Cables:")
+        self.lot_total_label = value(first)
+        caption(first, "LOT #:")
+        self.lot_number_label = value(first)
+        caption(first, "Progress:")
+
+        progress = tk.Frame(first, bg=self.GREEN)
+        progress.pack(side="left", padx=(2, 0))
+        self.lot_count_label = tk.Label(progress, text="", bg=self.GREEN, fg='black', font=font)
         self.lot_count_label.grid(row=0, column=0)
-        self.lot_slash_label = tk.Label(body, text="/", bg='white', fg=muted, font=big)
+        self.lot_slash_label = tk.Label(progress, text="/", bg=self.GREEN, fg='black', font=font)
         self.lot_slash_label.grid(row=0, column=1, padx=2)
-        self.lot_size_entry = tk.Entry(body, width=5, font=(self.FONT, 13, 'bold'),
-                                       justify="center", relief="solid", bd=1, fg='black',
+        self.lot_size_entry = tk.Entry(progress, width=5, font=font, justify="center",
+                                       relief="sunken", bd=1, fg='black',
                                        disabledforeground='black', insertbackground='black')
         self.lot_size_entry.grid(row=0, column=2)
         self.lot_size_entry.bind("<Return>", self.apply_lot_size)
         self.lot_size_entry.bind("<FocusOut>", self.apply_lot_size)
+        self.lot_bar = tk.Frame(progress, bg='white', width=80, height=12,
+                                relief="sunken", bd=1)
+        self.lot_bar.grid(row=0, column=3, padx=(6, 0))
+        self.lot_bar_fill = tk.Frame(self.lot_bar, bg=self.NAVY)
 
-        self.lot_bar = tk.Frame(body, bg=ui.SUBTLE, height=12)
-        self.lot_bar.grid(row=0, column=3, sticky="ew", padx=12)
-        self.lot_bar_fill = tk.Frame(self.lot_bar, bg=ui.SUCCESS)
-        # Shown in the bar's place until there is a size to count towards
-        self.lot_size_hint = tk.Label(body, text="Enter the lot size", bg='white',
-                                      fg=muted, font=(self.FONT, 10, 'bold'))
-        self.lot_size_hint.grid(row=0, column=3, sticky="w", padx=8)
-
-        total = tk.Frame(body, bg='white')
-        total.grid(row=0, column=4, sticky="e")
-        tk.Label(total, text="TOTAL OK", bg='white', fg=muted, font=small).pack(anchor="e")
-        self.lot_total_label = tk.Label(total, text="", bg='white', fg='black',
-                                        font=(self.FONT, 13, 'bold'))
-        self.lot_total_label.pack(anchor="e")
-
-        codes = tk.Frame(body, bg='white')
-        codes.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(2, 0))
-
-        def code(caption):
-            tk.Label(codes, text=caption, bg='white', fg=muted,
-                     font=small).pack(side="left", padx=(0, 4))
-            label = tk.Label(codes, text="", bg='white', fg='black',
-                             font=(self.FONT, 10, 'bold'))
-            label.pack(side="left", padx=(0, 16))
-            return label
-
-        self.lot_start_label = code("START")
-        self.lot_last_label = code("LAST OK")
+        second = line()
+        caption(second, "Start TraceCode:")
+        self.lot_start_label = value(second)
+        caption(second, "Last OK:")
+        self.lot_last_label = value(second)
 
         self.show_lot_progress()
-        return card
+        return box
 
     def create_scan_counters(self, parent_frame):
-        """Build the OK / NG / invalid / total counters shown beside the lot card."""
-        card, _, body = self.strip_card(parent_frame, "SCAN RESULTS")
+        """Build the OK / NG / invalid / total counters shown beside the lot box."""
+        box = tk.LabelFrame(parent_frame, text="SCAN RESULT COUNTERS", bg=self.GREEN,
+                            fg='black', font=(self.FONT, 9, 'bold'), bd=1, relief='groove')
 
-        # Each count in the colour of what it means. The palette's orange is
-        # too pale to read as text on white, so invalid scans use a deeper one.
-        definitions = (("OK", "OK", ui.SUCCESS), ("NG", "NG", ui.DANGER),
-                       ("INVALID", "***", '#D35400'), ("TOTAL", "TOTAL", self.NAVY))
+        definitions = (("OK", "OK Count :"), ("INVALID", "*** Count :"),
+                       ("NG", "NG Count :"), ("TOTAL", "Total Count :"))
         self.scan_count_labels = {}
-        for column, (key, caption, ink) in enumerate(definitions):
-            body.grid_columnconfigure(column, weight=1, uniform='count', minsize=58)
-            tile = tk.Frame(body, bg='white')
-            tile.grid(row=0, column=column, sticky="nsew",
-                      padx=(0 if column == 0 else 4, 0))
-            value = tk.Label(tile, text="", bg='white', fg=ink, width=4,
-                             font=(self.FONT, 20, 'bold'))
-            value.pack()
-            tk.Frame(tile, bg=ink, height=3).pack(fill="x", padx=6)
-            tk.Label(tile, text=caption, bg='white', fg=ui.TEXT_MUTED,
-                     font=(self.FONT, 8, 'bold')).pack(pady=(2, 0))
+        for position, (key, caption) in enumerate(definitions):
+            row, column = divmod(position, 2)
+            box.grid_columnconfigure(column * 2 + 1, weight=1)
+            tk.Label(box, text=caption, bg=self.GREEN, fg='black',
+                     font=(self.FONT, 9, 'bold')).grid(row=row, column=column * 2,
+                                                       sticky="e", padx=(4, 2), pady=(0, 2))
+            value = tk.Label(box, text="", bg='#E0FFFF', fg='black', width=5,
+                             relief='sunken', bd=1, font=(self.FONT, 9, 'bold'))
+            value.grid(row=row, column=column * 2 + 1, sticky="w", padx=(0, 4), pady=(0, 2))
             self.scan_count_labels[key] = value
 
         self.ok_count_label = self.scan_count_labels["OK"]
         self.ng_count_label = self.scan_count_labels["NG"]
         self.invalid_count_label = self.scan_count_labels["INVALID"]
         self.total_count_label = self.scan_count_labels["TOTAL"]
-        return card
+        return box
 
     def create_lot_tree(self, parent_frame, columns):
         """Create the lot tree with specified columns"""
@@ -3532,7 +3510,7 @@ class EOLTesterGUI:
         count = lot['LT_OK_COUNT'] if lot else 0
 
         self.lot_total_label.configure(text=str(self.lot_total_ok) if loaded else "")
-        self.lot_number_label.configure(text=f"LOT {self.lot_number}" if loaded else "")
+        self.lot_number_label.configure(text=str(self.lot_number) if loaded else "")
         self.lot_start_label.configure(text=(lot['LT_START_TRACE_CODE'] or "") if lot else "")
         self.lot_last_label.configure(text=(lot['LT_LAST_TRACE_CODE'] or "") if lot else "")
 
@@ -3560,11 +3538,6 @@ class EOLTesterGUI:
         else:
             for widget in progress:
                 widget.grid_remove()
-
-        if loaded and not self.lot_size:
-            self.lot_size_hint.grid()
-        else:
-            self.lot_size_hint.grid_remove()
 
     def apply_lot_size(self, event=None):
         """Take the lot size the operator typed, for the open lot and the ones after it."""
