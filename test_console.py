@@ -677,27 +677,9 @@ class EOLTesterGUI:
                                       padx=18, cursor='hand2', command=self.start_test_click)
         self.start_button.pack(side='right', padx=(0, 4), pady=8)
 
-        # Whether each camera checks the part. CAM1 is Vision Settings'
-        # "Camera 1 check enabled" too, so the two agree; both choices hold on
-        # reopening. Large boxes, as Tk's own are too small to see at a glance
-        # on the line. Packed from the right, so they read CAM1, CAM2.
-        self.camera_check_vars = {}
-        self.camera_check_boxes = {}
-        for number in (2, 1):
-            var = tk.BooleanVar(value=self.camera_check_saved(number))
-            box = ctk.CTkCheckBox(
-                bar, text=f"CAM{number}", variable=var,
-                command=lambda n=number: self.toggle_camera_check(n),
-                bg_color=bar.cget('bg'),
-                fg_color=ui.SUCCESS, hover_color=ui.SUCCESS_HOVER, border_color='black',
-                text_color='black', checkbox_width=26, checkbox_height=26,
-                font=(self.FONT, 14, 'bold'))
-            box.pack(side='right', padx=(0, 16), pady=8)
-            if stripe_check is None:
-                var.set(False)
-                box.configure(state='disabled')
-            self.camera_check_vars[number] = var
-            self.camera_check_boxes[number] = box
+        # Whether each camera checks the part is set in its own setup,
+        # opened by clicking its live view; see configure_camera()
+        self.camera_checks = {number: self.camera_check_saved(number) for number in (1, 2)}
 
     # Where each camera's on/off choice is kept in the vision settings
     CAMERA_CHECK_KEYS = {1: "vision_enabled", 2: "cam2_enabled"}
@@ -714,38 +696,24 @@ class EOLTesterGUI:
 
     def camera_check_on(self, number):
         """Whether camera `number` checks the part in the next test started."""
-        return stripe_check is not None and self.camera_check_vars[number].get()
+        return stripe_check is not None and self.camera_checks.get(number, False)
 
-    def toggle_camera_check(self, number):
-        """Change a camera's box after a login; it applies from the next test started.
+    def allow_camera_check_change(self, number, window):
+        """Ask for a login before a camera is turned on or off in its setup.
 
         Turning a camera off lets parts pass without it, so the change needs
         the same login as Settings and Vision Settings.
         """
         from login_form import prompt_login
 
-        var = self.camera_check_vars[number]
-        on = var.get()
-        # The box has already changed on the click; put it back until
-        # someone has logged in
-        var.set(not on)
-        user = prompt_login(self.root)
+        user = prompt_login(window)
         if user is None:
-            self.safe_update_message(f"Camera {number} check not changed - a login is needed.",
-                                     "red")
-            return
-        var.set(on)
-        try:
-            cfg = load_vision_config()
-            cfg[self.CAMERA_CHECK_KEYS[number]] = on
-            save_vision_config(cfg)
-        except OSError as e:
-            messagebox.showerror("Camera Check", f"Could not save the setting: {e}")
-        self.log_operator_action(f"CAM{number}_CHECK", f"{'On' if on else 'Off'} by {user}")
-        self.safe_update_message(
-            f"Camera {number} check on - it checks each part." if on else
-            f"Camera {number} check off - it will not check the parts.",
-            "green" if on else "red")
+            messagebox.showwarning("Camera Check",
+                                   f"Camera {number} check not changed - a login is needed.",
+                                   parent=window)
+            return False
+        self.camera_check_user = user
+        return True
 
     def start_test_click(self):
         """Start a PLC test cycle on the loaded part.
@@ -1687,12 +1655,13 @@ class EOLTesterGUI:
         self.image_label.place(relx=0.5, rely=0.5, anchor='center')
 
     def update_camera_status(self, status_values):
-        """Show camera 1's verdict from its OK, NG and ON/OFF coils.
+        """Show camera 1's verdict from its OK and NG coils.
 
-        ProcessStatus.txt lists them after the eight process steps. Lines
-        without them have no camera, and cam1Result stays blank.
+        ProcessStatus.txt lists them after the eight process steps. Whether
+        camera 1 is on comes from its setup, not from the PLC. Lines without
+        the coils have no camera, and cam1Result stays blank.
         """
-        if len(self.process_addresses) < 11:
+        if len(self.process_addresses) < 10:
             return
         # The app checked camera 1 itself for this part; that verdict stands
         if self.cam1_by_app:
@@ -1700,9 +1669,8 @@ class EOLTesterGUI:
 
         cam_ok = status_values.get(self.process_addresses[8], False)
         cam_ng = status_values.get(self.process_addresses[9], False)
-        cam_on = status_values.get(self.process_addresses[10], False)
 
-        if not cam_on:
+        if not self.camera_check_on(1):
             text, fill = "OFF", self.SILVER
             self.cam1Result = "OFF"
         elif cam_ok and cam_ng:
@@ -1809,10 +1777,28 @@ class EOLTesterGUI:
         else:
             source, title = stripe_check.CAMERA_SOURCE, "Camera 2 (stripes)"
         self.stop_camera_streams("Setting up…")
+        was_on = self.camera_check_saved(number)
+        self.camera_check_user = None
         try:
-            vision_settings._open_camera_dialog(self.root, source, title)
+            vision_settings._open_camera_dialog(
+                self.root, source, title, check_key=self.CAMERA_CHECK_KEYS[number],
+                allow_check_change=lambda window: self.allow_camera_check_change(number,
+                                                                                  window))
         finally:
             self.start_camera_streams()
+
+        # It applies from the next test started
+        on = self.camera_check_saved(number)
+        self.camera_checks[number] = on
+        if number == 1 and not on:
+            self.cam1_view.set_status("OFF", self.SILVER)
+        if on != was_on:
+            self.log_operator_action(f"CAM{number}_CHECK",
+                                     f"{'On' if on else 'Off'} by {self.camera_check_user}")
+            self.safe_update_message(
+                f"Camera {number} check on - it checks each part." if on else
+                f"Camera {number} check off - it will not check the parts.",
+                "green" if on else "red")
 
     def grab_camera1(self):
         """A frame from camera 1, or None if it isn't a USB camera set up here."""

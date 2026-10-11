@@ -1155,8 +1155,9 @@ def render(parent):
     initial = (enabled_var.get(), round(thresh_var.get(), 2))
 
     ttk.Checkbutton(ib, text="Camera 1 check enabled", variable=enabled_var).pack(fill="x")
-    tk.Label(ib, text="The Test console's CAM1 box. When off, camera 1 doesn't check "
-                      "the parts; camera 2 has its own CAM2 box there.",
+    tk.Label(ib, text="Also in camera 1's setup on the Test console. When off, camera 1 "
+                      "doesn't check the parts; camera 2 is turned on or off in its own "
+                      "setup there.",
              bg=PANEL, fg=TXT_FAINT, font=(FONT, 10), anchor="w",
              wraplength=265, justify="left").pack(fill="x", padx=(22, 0), pady=(0, 12))
 
@@ -2373,20 +2374,25 @@ def _prompt_part_number(parent, title, prompt, taken=()):
 # Camera configuration
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _open_camera_dialog(parent, source=None, title="Inspection Camera"):
+def _open_camera_dialog(parent, source=None, title="Inspection Camera",
+                        check_key=None, allow_check_change=None):
     """Pick and verify a camera. Returns True if the config changed.
 
     `source` names the camera in camera_cfg.ini; by default it is the one
-    template matching uses.
+    template matching uses. `check_key` names the vision_config.json
+    setting that turns this camera's check of the parts on or off, and adds
+    a box for it; `allow_check_change(window)` is asked before a change to
+    it is saved, and returns False to keep the setting as it was.
     """
     if not _cv2_ok or not _pil_ok:
         messagebox.showerror("Camera", "OpenCV and Pillow are required.", parent=parent)
         return False
 
-    from vision_engine import camera
+    from vision_engine import camera, load_vision_config, save_vision_config
 
     cam = _load_cam_cfg(source)
-    win = _dialog(parent, "Camera Configuration", 820, 580)
+    # Taller with the camera's on/off box, so Re-scan still fits beneath it
+    win = _dialog(parent, "Camera Configuration", 820, 680 if check_key else 580)
     _dialog_header(win, title,
                    "The preview is the exact feed inspection will use.")
 
@@ -2419,6 +2425,25 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera"):
     card = _card(rail, "Device", icon="camera")
     card.pack(fill="x")
     cb_body = card.body
+
+    # Whether this camera checks the parts at all
+    check_var = tk.BooleanVar(value=True)
+    check_was = None
+    if check_key:
+        v_cfg = load_vision_config()
+        # Before each camera had its own setting, one turned both on or off
+        check_was = bool(v_cfg.get(check_key, v_cfg.get("vision_enabled", True)))
+        check_var.set(check_was)
+        ctk.CTkCheckBox(cb_body, text="Check parts with this camera", variable=check_var,
+                        bg_color=PANEL, fg_color=ui.NAVY, hover_color=ui.ACCENT_ACTIVE,
+                        border_color=ui.BORDER_STRONG, text_color=TXT,
+                        checkbox_width=22, checkbox_height=22, corner_radius=4,
+                        font=(FONT, 11, "bold")).pack(fill="x")
+        tk.Label(cb_body, text="When off, it takes no picture and does not judge the "
+                               "part.",
+                 bg=PANEL, fg=TXT_FAINT, font=(FONT, 10), wraplength=215,
+                 justify="left", anchor="w").pack(fill="x", padx=(30, 0), pady=(2, 10))
+        tk.Frame(cb_body, bg=LINE, height=1).pack(fill="x", pady=(0, 10))
 
     tk.Label(cb_body, text="Camera", bg=PANEL, fg=TXT_DIM, font=(FONT, 11),
              anchor="w").pack(fill="x")
@@ -2550,6 +2575,10 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera"):
     def _save():
         idx = _selected_index()
         w, h = [int(v) for v in res_var.get().split("x")]
+        check_now = check_var.get()
+        if check_key and check_now != check_was and allow_check_change is not None:
+            if not allow_check_change(win):
+                return      # the dialog stays open, the box as it was chosen
         if idx >= 0 and stream["s"] is not None and stream["s"].latest() is None:
             if not messagebox.askyesno(
                     "No Preview",
@@ -2558,6 +2587,10 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera"):
                 return
         try:
             _save_cam_cfg(idx, w, h, idx >= 0, source)
+            if check_key and check_now != check_was:
+                v_cfg = load_vision_config()
+                v_cfg[check_key] = check_now
+                save_vision_config(v_cfg)
         except OSError as e:
             messagebox.showerror("Camera", "Could not save the camera:\n\n%s" % e,
                                  parent=win)
