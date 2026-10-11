@@ -3752,14 +3752,19 @@ class EOLTesterGUI:
             """
             cursor.execute(lot_query, (self.partNumber, datetime.today().date()))
             result = cursor.fetchone()
-            
-            if result:
-                self.lotNo = result['RUNNING_LOT_NUMBER']
-                self.partRunningSerialExists = True
-            else:
-                self.lotNo = "0"
-                self.partRunningSerialExists = False
-            
+            self.partRunningSerialExists = result is not None
+            last = int(result['RUNNING_LOT_NUMBER'] or 0) if result else 0
+
+            # Tests saved before NG serials were kept can be ahead of the
+            # running serial; start after the highest serial used today
+            cursor.execute("""
+                SELECT MAX(CAST(TD_LOT_NUMBER AS UNSIGNED)) AS LAST_USED
+                FROM TBL_TEST_DATA
+                WHERE TD_PART_NUMBER = %s AND TD_RECORD_DATE = %s
+            """, (self.partNumber, datetime.today().date()))
+            used = cursor.fetchone()['LAST_USED']
+            self.lotNo = f"{max(last, int(used or 0)):07d}"
+
             cursor.close()
             connection.close()
             
@@ -4626,11 +4631,12 @@ class EOLTesterGUI:
             self.trace(f"SAVED {status} - lot {self.lotNo}, {self.traceabilityCode}")
             self.log_operator_action("TEST_SAVED", f"{status} - lot {self.lotNo}, {self.traceabilityCode}")
             
-            # Update or insert part running serial
+            # Every saved test used up its serial, NG included, so a reload
+            # carries on after it instead of handing the same code out again
+            self.update_part_running_serial(cursor)
             if status == "OK":
-                self.update_part_running_serial(cursor)
                 self.count_ok_in_lot(cursor)
-                connection.commit()
+            connection.commit()
             
             cursor.close()
             connection.close()
