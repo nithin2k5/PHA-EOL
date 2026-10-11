@@ -862,8 +862,11 @@ class EOLTesterGUI:
         if label_problem:
             print(f"Warning: {label_problem}; the labels show L1-L{self.LABEL_COUNT}")
 
+        # The lamps stretch down to the bottom of the row, so any height the
+        # specification side needs beyond the image goes to them, not a gap
         lamps = tk.Frame(panel, bg=self.PANEL)
-        lamps.pack(fill="x", pady=(4, 0))
+        lamps.pack(fill="both", expand=True, pady=(4, 0))
+        lamps.grid_rowconfigure(0, weight=1)
         self.process_status_labels = {}
         steps = (('auto', 'AUTO'), ('home', 'HOME'),
                  ('1st', '1st PULL\n(Load Test)'), ('2nd', '2nd PULL\n(Length Test)'),
@@ -872,7 +875,7 @@ class EOLTesterGUI:
             lamps.grid_columnconfigure(column, weight=1, uniform='lamp')
             lamp = tk.Label(lamps, text=text, bg=self.SKY, fg='black', height=2,
                             font=(self.FONT, 16, 'bold'))
-            lamp.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 8, 0))
+            lamp.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0))
             self.process_status_labels[key] = lamp
             # The monitoring loop addresses them as auto_label, home_label ...
             setattr(self, f"{key}_label", lamp)
