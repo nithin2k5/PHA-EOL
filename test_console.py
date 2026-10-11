@@ -715,6 +715,73 @@ class EOLTesterGUI:
         self.camera_check_user = user
         return True
 
+    def ask_lot_size(self):
+        """Ask for the loaded part's lot size in a pop-up. True once one is set.
+
+        The size goes through the lot box, so it is checked and saved just
+        as one typed there would be.
+        """
+        dialog = tk.Toplevel(self.root, bg='white')
+        dialog.title("Lot Size")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+
+        tk.Label(dialog, text="ENTER LOT SIZE", bg=self.NAVY, fg='white',
+                 font=(self.FONT, 16, 'bold'), pady=10).pack(fill="x")
+        body = tk.Frame(dialog, bg='white')
+        body.pack(fill="both", expand=True, padx=24, pady=(16, 8))
+        tk.Label(body, text=f"Part {self.current_part_number} has no lot size.\n"
+                            "Enter how many OK cables make one lot to start the test.",
+                 bg='white', fg='black', font=(self.FONT, 12), justify="center").pack()
+        entry = tk.Entry(body, width=8, font=(self.FONT, 22, 'bold'), justify="center",
+                         bg=self.YELLOW, fg='black', insertbackground='black',
+                         relief="solid", bd=1)
+        entry.pack(pady=(14, 4), ipady=4)
+        problem = tk.Label(body, text="", bg='white', fg=ui.DANGER, font=(self.FONT, 11, 'bold'))
+        problem.pack()
+
+        buttons = tk.Frame(dialog, bg='white')
+        buttons.pack(fill="x", padx=24, pady=(4, 18))
+        buttons.grid_columnconfigure(0, weight=1, uniform='button')
+        buttons.grid_columnconfigure(1, weight=1, uniform='button')
+
+        def start():
+            text = entry.get().strip()
+            if not text.isdigit() or int(text) <= 0:
+                problem.configure(text="Enter a whole number above 0")
+                entry.focus_set()
+                return
+            box = self.lot_size_entry
+            box.delete(0, tk.END)
+            box.insert(0, text)
+            self.apply_lot_size()
+            if self.lot_size == int(text):
+                dialog.destroy()
+            else:
+                problem.configure(text="The lot size could not be saved")
+
+        tk.Button(buttons, text="START TEST", bg=ui.SUCCESS, fg='white',
+                  activebackground=ui.SUCCESS_HOVER, activeforeground='white',
+                  font=(self.FONT, 13, 'bold'), relief='raised', bd=1, cursor='hand2',
+                  command=start).grid(row=0, column=0, sticky="ew", padx=(0, 6), ipady=4)
+        tk.Button(buttons, text="CANCEL", bg=ui.SUBTLE, fg='black',
+                  font=(self.FONT, 13, 'bold'), relief='raised', bd=1, cursor='hand2',
+                  command=dialog.destroy).grid(row=0, column=1, sticky="ew", padx=(6, 0),
+                                               ipady=4)
+        entry.bind("<Return>", lambda e: start())
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+        # Centred over the console, holding the keyboard until it closes
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - dialog.winfo_reqwidth()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - dialog.winfo_reqheight()) // 3
+        dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        dialog.grab_set()
+        entry.focus_set()
+        self.root.wait_window(dialog)
+        self.root.focus_set()
+        return bool(self.lot_size)
+
     def start_test_click(self):
         """Start a PLC test cycle on the loaded part.
 
@@ -727,12 +794,10 @@ class EOLTesterGUI:
         if not getattr(self, 'current_part_number', None):
             messagebox.showwarning("Start Test", "Scan an ALC code to load a part first.")
             return
-        # The OK cables are counted into lots, so a test needs a lot size
-        if not self.lot_size:
+        # The OK cables are counted into lots, so a test needs a lot size;
+        # one entered here starts the test straight away
+        if not self.lot_size and not self.ask_lot_size():
             self.safe_update_message("Enter the lot size, then press START", "red")
-            messagebox.showwarning("Start Test",
-                                   "Enter the lot size in CURRENT LOT PROGRESS before "
-                                   "starting the test.")
             return
         try:
             connected = bool(self.plc_client) and self.plc_client.is_socket_open()
