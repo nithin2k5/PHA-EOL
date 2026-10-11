@@ -666,16 +666,29 @@ class EOLTesterGUI:
                             font=(self.FONT, 11, 'bold'), relief='flat', padding=(4, 6))
             style.map(f"{name}.Heading", background=[('active', '#33CCFF')])
 
+    START_RIM = '#004D00'       # the START button's edge
+    START_PRESSED = '#005000'   # its face while held down
+
     def create_title_bar(self):
         bar = ui.title_bar(self.main_container, "EOL (END OF LINE) TESTER")
 
-        # Starts a PLC test cycle on the loaded part, beside the machine ID
-        self.start_button = tk.Button(bar, text="START", bg=ui.SUCCESS, fg=ui.TEXT_ON_DARK,
-                                      activebackground=ui.SUCCESS_HOVER,
-                                      activeforeground=ui.TEXT_ON_DARK,
-                                      font=(self.FONT, 14, 'bold'), relief='raised', bd=1,
-                                      padx=18, cursor='hand2', command=self.start_test_click)
-        self.start_button.pack(side='right', padx=(0, 4), pady=8)
+        # Starts a PLC test cycle on the loaded part, beside the machine ID: a
+        # rounded green button with a play mark and a darker rim, the shade
+        # deepening under the pointer and while it is held down
+        self.start_button = ctk.CTkButton(
+            bar, text="START", command=self.start_test_click,
+            image=ui.icon_image('play', ui.TEXT_ON_DARK, 26), compound='left',
+            width=150, height=40, corner_radius=10, border_width=2,
+            fg_color=ui.SUCCESS, hover_color=ui.SUCCESS_HOVER,
+            border_color=self.START_RIM, bg_color=bar.cget('bg'),
+            text_color=ui.TEXT_ON_DARK, font=(self.FONT, 21, 'bold'), cursor='hand2')
+        self.start_button.pack(side='right', padx=(0, 10), pady=4)
+        # Back to green on a timer rather than on release, which a pop-up
+        # opened by the press would take
+        def pressed(event):
+            self.start_button.configure(fg_color=self.START_PRESSED)
+            self.root.after(180, lambda: self.start_button.configure(fg_color=ui.SUCCESS))
+        self.start_button.bind('<ButtonPress-1>', pressed, add='+')
 
         # Whether each camera checks the part is set in its own setup,
         # opened by clicking its live view; see configure_camera()
