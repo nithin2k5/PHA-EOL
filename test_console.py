@@ -1225,7 +1225,12 @@ class EOLTesterGUI:
                                  columns=columns,
                                  show="headings",
                                  height=10,
-                                 style="Data.Eol.Treeview")
+                                 style="Data.Eol.Treeview",
+                                 yscrollcommand=lambda *_: self.draw_result_rows_soon())
+        # Black lines under each result, drawn over the grid
+        self.result_lines = []
+        self.result_rows_pending = False
+        self.tree.bind('<Configure>', lambda e: self.draw_result_rows_soon())
 
         for col in columns:
             self.tree.heading(col, text=col)
@@ -1250,6 +1255,7 @@ class EOLTesterGUI:
                 return "break"
             return handler
 
+        self.result_wheel = on_mousewheel   # the row lines pass the wheel on
         if sys.platform == "win32":
             self.tree.bind("<MouseWheel>", on_mousewheel)
         else:
@@ -1263,6 +1269,51 @@ class EOLTesterGUI:
 
         # Bind double-click event to view details
         self.tree.bind("<Double-1>", self.on_tree_double_click)
+
+    RESULT_LINE = '#000000'
+
+    def draw_result_rows_soon(self):
+        """Redraw the row lines once scrolling or filling settles."""
+        if not self.result_rows_pending:
+            self.result_rows_pending = True
+            self.root.after_idle(self.draw_result_rows)
+
+    def draw_result_rows(self):
+        """Draw a black line under the heading and under each result on show.
+
+        Rows are all one height and the grid scrolls a whole row at a time,
+        so the lines sit on the visible rows' edges.
+        """
+        self.result_rows_pending = False
+        tree = self.tree
+        if not tree.winfo_exists():
+            return
+        for line in self.result_lines:
+            line.destroy()
+        self.result_lines = []
+
+        items = tree.get_children()
+        if not items:
+            return      # lines only once there are results
+
+        def line(y):
+            mark = tk.Frame(tree, bg=self.RESULT_LINE)
+            mark.place(x=0, y=y, relwidth=1, height=1)
+            if sys.platform == "win32":
+                mark.bind("<MouseWheel>", self.result_wheel)
+            self.result_lines.append(mark)
+
+        first = int(round(tree.yview()[0] * len(items)))
+        drew_top = False
+        for item in items[first:]:
+            box = tree.bbox(item)
+            if not box:
+                break       # past the bottom of the grid
+            x, y, width, height = box
+            if not drew_top:
+                line(y - 1)
+                drew_top = True
+            line(y + height - 1)
 
     def lot_columns(self, devices):
         """Results grid columns: L2-L4 and P3-P4 only when the part's spec lists them."""
@@ -1324,6 +1375,7 @@ class EOLTesterGUI:
                 self.tree.insert('', 'end', values=tuple(values), tags=(tag,))
 
             self.tree.selection_remove(self.tree.selection())
+            self.draw_result_rows_soon()
 
         except Exception as e:
             print(f"Error populating data grid: {e}")
