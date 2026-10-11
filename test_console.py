@@ -410,6 +410,8 @@ class EOLTesterGUI:
         # Plotted chart points, keyed by series name
         self.chart_series = {name: [] for name in
                              ('L1', 'L2', 'L3', 'L4', 'P1', 'P2', 'P3', 'P4')}
+        # Today's OK cables for the loaded part, keyed by hour of the day
+        self.uph_counts = {}
 
         self.barcodePrintFileName = ""
         self.prnFileContent = ""
@@ -953,12 +955,13 @@ class EOLTesterGUI:
         return panel
 
     def create_third_quadrant(self):
-        """The load and length trend charts, stacked on black."""
+        """The load and length trend charts and the UPH chart, stacked on black."""
         panel = tk.Frame(self.workspace, bg='black', highlightthickness=1,
                          highlightbackground=self.EDGE)
         panel.grid_columnconfigure(0, weight=1)
         panel.grid_rowconfigure(0, weight=1)
         panel.grid_rowconfigure(1, weight=1)
+        panel.grid_rowconfigure(2, weight=1)
 
         self.load_canvas = tk.Canvas(panel, bg='black', highlightthickness=0, height=120)
         self.load_canvas.grid(row=0, column=0, sticky="nsew")
@@ -967,6 +970,10 @@ class EOLTesterGUI:
 
         self.load_canvas.bind('<Configure>', lambda e: self.draw_load_graph())
         self.length_canvas.bind('<Configure>', lambda e: self.draw_length_graph())
+
+        self.uph_canvas = tk.Canvas(panel, bg='black', highlightthickness=0, height=120)
+        self.uph_canvas.grid(row=2, column=0, sticky="nsew")
+        self.uph_canvas.bind('<Configure>', lambda e: self.draw_uph_graph())
         return panel
 
     def create_fourth_quadrant(self):
@@ -1354,6 +1361,110 @@ class EOLTesterGUI:
                         self.LENGTH_COLORS,
                         [-5, -3, -1, 1, 3, 5],
                         "LENGTH - GRAPH")
+
+    # Bars on the UPH chart; the hour still running is drawn brighter
+    UPH_BAR = '#00B000'
+    UPH_BAR_NOW = '#7CFC00'
+
+    def draw_uph_graph(self):
+        """Draw today's OK cables per hour for the loaded part, one bar per hour.
+
+        Margins match the trend charts above so the three plot areas line up.
+        """
+        canvas = self.uph_canvas
+        canvas.delete("all")
+
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        if width <= 1:
+            width = canvas.winfo_reqwidth()   # not mapped yet
+        if height <= 1:
+            height = canvas.winfo_reqheight()
+
+        left_margin, right_margin, top_margin, bottom_margin = 44, 80, 22, 20
+        graph_width = width - (left_margin + right_margin)
+        graph_height = height - (top_margin + bottom_margin)
+        if graph_width <= 0 or graph_height <= 0:
+            return
+
+        label_font = (self.FONT, 8, 'bold')
+        canvas.create_text(left_margin + graph_width / 2, top_margin / 2 + 1,
+                           text="UPH - GRAPH (OK CABLES PER HOUR)",
+                           fill='white', font=(self.FONT, 9, 'bold'))
+
+        # Whole-number ticks, at least 0 to 10 when there is little or nothing yet
+        counts = self.uph_counts
+        peak = max(counts.values(), default=0)
+        step = max(math.ceil(self.nice_step(peak, self.Y_DIVISIONS)), 2) if peak else 2
+        top = step * self.Y_DIVISIONS
+
+        baseline = height - bottom_margin
+        plot_right = width - right_margin
+        dash = (6, 2, 2, 2, 2, 2)   # dash-dot-dot, as on the trend charts
+
+        for i in range(self.Y_DIVISIONS + 1):
+            y = baseline - (i * graph_height / self.Y_DIVISIONS)
+            canvas.create_line(left_margin, y, plot_right, y, fill=self.CHART_GRID, dash=dash)
+            canvas.create_text(left_margin - 6, y, text=f"{step * i:,}",
+                               anchor="e", fill='white', font=label_font)
+
+        # One slot per hour of the day; every other hour is labelled when
+        # the slots get too narrow for all 24
+        slot = graph_width / 24
+        label_every = 1 if slot >= 22 else 2
+        now = datetime.now().hour
+        for hour in range(24):
+            x = left_margin + hour * slot
+            if hour % label_every == 0:
+                canvas.create_text(x + slot / 2, baseline + 10, text=f"{hour:02d}",
+                                   fill='white', font=label_font)
+            count = counts.get(hour, 0)
+            if not count:
+                continue
+            bar_top = baseline - (count / top) * graph_height
+            canvas.create_rectangle(x + slot * 0.15, bar_top, x + slot * 0.85, baseline,
+                                    fill=self.UPH_BAR_NOW if hour == now else self.UPH_BAR,
+                                    outline="")
+            if slot >= 18:
+                canvas.create_text(x + slot / 2, bar_top - 6, text=str(count),
+                                   fill='white', font=label_font)
+
+        # This hour and the day so far, where the trend charts keep their legend
+        box_left = plot_right + 12
+        box_top = top_margin + 4
+        canvas.create_rectangle(box_left, box_top, width - 8, box_top + 36,
+                                fill='white', outline=self.EDGE)
+        canvas.create_text(box_left + 6, box_top + 11, anchor="w", fill='black',
+                           font=label_font, text=f"NOW  {counts.get(now, 0)}")
+        canvas.create_text(box_left + 6, box_top + 25, anchor="w", fill='black',
+                           font=label_font, text=f"DAY  {sum(counts.values())}")
+
+    def load_uph(self):
+        """Count today's OK cables for the loaded part by hour, then redraw the UPH chart."""
+        counts = {}
+        if self.partNumber:
+            try:
+                connection = self.get_database_connection()
+                if connection:
+                    cursor = connection.cursor()
+                    cursor.execute("""
+                        SELECT HOUR(TD_DATETIME), COUNT(*)
+                        FROM TBL_TEST_DATA
+                        WHERE TD_PART_NUMBER = %s AND TD_RECORD_DATE = CURDATE()
+                          AND TD_OVERALL_STATUS = 'OK'
+                        GROUP BY HOUR(TD_DATETIME)
+                    """, (self.partNumber,))
+                    counts = {int(hour): int(count) for hour, count in cursor.fetchall()
+                              if hour is not None}
+                    cursor.close()
+                    connection.close()
+            except Exception as e:
+                print(f"Error loading UPH: {e}")
+        self.uph_counts = counts
+        try:
+            self.draw_uph_graph()
+        except Exception as e:
+            print(f"Error drawing UPH graph: {e}")
 
     def show_placeholder(self, entry, text):
         """Put the grey watermark text in an empty code box."""
@@ -3721,6 +3832,7 @@ class EOLTesterGUI:
             self.dataPointX = total_records if total_records > 1000 else len(rows)
 
             self.redraw_graphs()
+            self.load_uph()
             print(f"Loaded {len(rows)} chart points for part: {self.partNumber}")
 
         except Exception as e:
@@ -3758,6 +3870,7 @@ class EOLTesterGUI:
                     del series[:len(series) - 1000]
 
             self.redraw_graphs()
+            self.load_uph()
             print(f"Updated charts with data point {self.dataPointX}")
 
         except Exception as e:
