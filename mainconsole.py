@@ -199,6 +199,8 @@ class MainConsole(tk.Tk):
     NAV_TAB_HEIGHT = 64
     # How long the navigation takes to slide away or back.
     NAV_SLIDE_MS = 180
+    # How long the navigation stays out after a page is opened from it.
+    NAV_HIDE_DELAY_MS = 3000
 
     def __init__(self):
         super().__init__()
@@ -397,6 +399,7 @@ class MainConsole(tk.Tk):
         self.nav_overlay = self.build_nav_overlay()
         self.nav_slide = None
         self.nav_slide_token = None
+        self.nav_hide_job = None
 
     # Where the slide's window waits, out of sight, between slides
     NAV_OVERLAY_AWAY = -32000
@@ -464,6 +467,10 @@ class MainConsole(tk.Tk):
 
     def set_nav(self, shown):
         """Slide the navigation out or away, turning its tab's triangle to match."""
+        # Whatever is asked for now overrides a put-away still waiting
+        if self.nav_hide_job is not None:
+            self.after_cancel(self.nav_hide_job)
+            self.nav_hide_job = None
         if self.nav_slide_token is not None:
             self.end_nav_slide()
         if shown == self.nav_open:
@@ -832,9 +839,19 @@ class MainConsole(tk.Tk):
         self.mark_current(entry)
 
         # The navigation lies over the page's left edge, so it is put away
-        # once a page is chosen; its tab brings it back.
-        self.set_nav(False)
+        # a few seconds after a page is chosen; its tab brings it back.
+        self.hide_nav_soon()
         return True
+
+    def hide_nav_soon(self):
+        """Put the navigation away once NAV_HIDE_DELAY_MS has passed."""
+        if self.nav_hide_job is not None:
+            self.after_cancel(self.nav_hide_job)
+        self.nav_hide_job = self.after(self.NAV_HIDE_DELAY_MS, self.hide_nav_now)
+
+    def hide_nav_now(self):
+        self.nav_hide_job = None
+        self.set_nav(False)
 
     def close_page(self):
         """Tear down the page on show, if there is one."""
