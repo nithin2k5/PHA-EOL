@@ -721,10 +721,7 @@ class EOLTesterGUI:
 
         user = prompt_login(window)
         if user is None:
-            messagebox.showwarning("Camera Check",
-                                   f"Camera {number} check not changed - a login is needed.",
-                                   parent=window)
-            return False
+            return False    # the box just stays as it was
         self.camera_check_user = user
         return True
 
