@@ -23,67 +23,6 @@ import icons
 import customtkinter as ctk
 
 
-def grab_window(window, box):
-    """A picture of part of a Tk window, `box` given in the window's own pixels.
-
-    It is copied from the window itself rather than from the screen: this
-    app is not DPI aware, so on a scaled display (125% and the like) the
-    screen holds the window stretched, and a screen grab comes back at the
-    wrong size. The window's own pixels are the size Tk draws them.
-    Windows only; elsewhere it raises, and the caller does without.
-    """
-    import ctypes
-    from ctypes import wintypes
-    from PIL import Image
-
-    user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
-    user32.GetDC.restype = wintypes.HDC
-    user32.GetDC.argtypes = [wintypes.HWND]
-    user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
-    gdi32.CreateCompatibleDC.restype = wintypes.HDC
-    gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
-    gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
-    gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
-    gdi32.SelectObject.restype = wintypes.HGDIOBJ
-    gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
-    gdi32.BitBlt.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-                             ctypes.c_int, wintypes.HDC, ctypes.c_int, ctypes.c_int,
-                             wintypes.DWORD]
-    gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT,
-                                ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
-    gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
-    gdi32.DeleteDC.argtypes = [wintypes.HDC]
-
-    class BitmapInfoHeader(ctypes.Structure):
-        _fields_ = [('biSize', wintypes.DWORD), ('biWidth', wintypes.LONG),
-                    ('biHeight', wintypes.LONG), ('biPlanes', wintypes.WORD),
-                    ('biBitCount', wintypes.WORD), ('biCompression', wintypes.DWORD),
-                    ('biSizeImage', wintypes.DWORD), ('biXPelsPerMeter', wintypes.LONG),
-                    ('biYPelsPerMeter', wintypes.LONG), ('biClrUsed', wintypes.DWORD),
-                    ('biClrImportant', wintypes.DWORD)]
-
-    left, top, right, bottom = box
-    width, height = right - left, bottom - top
-    hwnd = window.winfo_id()
-    source = user32.GetDC(hwnd)
-    memory = gdi32.CreateCompatibleDC(source)
-    bitmap = gdi32.CreateCompatibleBitmap(source, width, height)
-    try:
-        gdi32.SelectObject(memory, bitmap)
-        if not gdi32.BitBlt(memory, 0, 0, width, height, source, left, top, 0x00CC0020):
-            raise OSError("the window could not be copied")
-        header = BitmapInfoHeader(biSize=ctypes.sizeof(BitmapInfoHeader), biWidth=width,
-                                  biHeight=-height, biPlanes=1, biBitCount=32)
-        pixels = ctypes.create_string_buffer(width * height * 4)
-        if not gdi32.GetDIBits(memory, bitmap, 0, height, pixels, ctypes.byref(header), 0):
-            raise OSError("the window copy could not be read")
-        return Image.frombuffer('RGB', (width, height), pixels, 'raw', 'BGRX', 0, 1)
-    finally:
-        gdi32.DeleteObject(bitmap)
-        gdi32.DeleteDC(memory)
-        user32.ReleaseDC(hwnd, source)
-
-
 class PageFrame(tk.Frame):
     """A panel a console can be built into as though it were its own window.
 
@@ -364,13 +303,16 @@ class MainConsole(tk.Tk):
         return nav
 
     def build_nav_drawer(self, parent):
-        """The navigation, laid over the page's left edge, and its tab.
+        """The navigation and its tab, in a see-through window of their own over the page's left edge.
 
-        It lies over the page rather than taking width from it, so showing
-        or hiding it never makes the page lay itself out again.
+        Tk cannot make part of a window see-through, only a whole window,
+        so the rail lives in a borderless window kept over this one. Its
+        background is a colour Windows leaves out entirely, so only the
+        rail and its tab show, and clicks beside them reach the page.
         """
         self.nav_width = max(60, round(self.winfo_screenwidth() * self.NAV_SHARE))
-        self.nav = self.build_side_nav(parent)
+        self.nav_window = self.build_nav_window()
+        self.nav = self.build_side_nav(self.nav_window)
         self.nav.configure(width=self.nav_width)
 
         # A navy tab on the navigation's right edge, halfway down, carrying
@@ -379,7 +321,7 @@ class MainConsole(tk.Tk):
         # placed by a plain frame around it, because CTk scales a widget's
         # own place() coordinates for the display and it would then sit
         # adrift of the navigation's edge.
-        self.nav_tab_holder = tk.Frame(parent, bg=ui.NAVY, exact_colors=True)
+        self.nav_tab_holder = tk.Frame(self.nav_window, bg=ui.NAVY, exact_colors=True)
         self.nav_tab = ctk.CTkButton(
             self.nav_tab_holder, text='', command=self.toggle_nav,
             width=self.NAV_TAB_WIDTH, height=self.NAV_TAB_HEIGHT,
@@ -391,75 +333,111 @@ class MainConsole(tk.Tk):
         self.nav_open = True
         self.nav.place(x=0, y=0, relheight=1, width=self.nav_width)
         self.nav_tab_holder.place(x=self.nav_width, rely=0.5, anchor='w')
-        self.nav.lift()
-        self.nav_tab_holder.lift()
 
-        # The slide is played in a borderless window laid over the left edge
-        # of this one; see build_nav_overlay()
-        self.nav_overlay = self.build_nav_overlay()
         self.nav_slide = None
-        self.nav_slide_token = None
         self.nav_hide_job = None
+        self.nav_body = parent
+        # Kept over the page as this window moves, resizes or is restored
+        parent.bind('<Configure>', lambda e: self.place_nav(self.nav_open), add='+')
+        self.bind('<Map>', lambda e: self.place_nav(self.nav_open), add='+')
+        self.after_idle(lambda: self.place_nav(self.nav_open))
 
-    # Where the slide's window waits, out of sight, between slides
-    NAV_OVERLAY_AWAY = -32000
+    # How much of the page shows through the navigation, 1.0 being solid
+    NAV_ALPHA = 0.85
+    # Painted where the navigation's window should not be at all
+    NAV_CLEAR = '#010203'
 
-    def build_nav_overlay(self):
-        """A borderless window, kept above this one, for playing the navigation's slide in.
+    def build_nav_window(self):
+        """A borderless window over this one, that never takes the focus.
 
-        Moving the rail itself redrew every rounded button on it at every
-        step, and uncovering the page made the page redraw at every step, so
-        the slide juddered and smeared. Instead the real rail is moved once,
-        out of sight beneath this window, and the slide is played here on
-        pictures of the rail, its tab and the page: one cheap canvas redraw
-        a step. Being a window of its own, it does not hide the page from a
-        copy of this window's pixels, so the page beneath can be pictured
-        after the rail has gone.
+        Tk keeps the window drawn see-through; who owns it and how it is
+        activated are set on it by hand in own_nav_window(), as Tk does not
+        give a borderless window an owner.
+        """
+        window = tk.Toplevel(self, bg=self.NAV_CLEAR, exact_colors=True)
+        window.overrideredirect(True)
+        try:
+            window.attributes('-transparentcolor', self.NAV_CLEAR)
+            window.attributes('-alpha', self.NAV_ALPHA)
+        except tk.TclError as e:
+            print(f"Navigation drawn solid: {e}")
+        window.bind('<Map>', lambda e: self.own_nav_window(), add='+')
+        self.bind('<Map>', lambda e: self.own_nav_window(), add='+')
+        self.after_idle(self.own_nav_window)
 
-        It is never activated, so neither showing it nor a click on it takes
-        the focus from the console's entry boxes. Returns None where it
-        cannot be made so, and the navigation then just jumps.
+        # Tk moves its focus into the rail when it is clicked, though
+        # Windows never activates it; the focus goes straight back to the
+        # console, so a scan after using the rail still lands in its box
+        self.nav_return_focus = None
+        self.bind_all('<FocusIn>', self.keep_focus_off_nav, add='+')
+        return window
+
+    def keep_focus_off_nav(self, event):
+        """Remember where the focus is in the console, and send it back there from the rail."""
+        widget = event.widget
+        if not isinstance(widget, tk.Misc):
+            return
+        try:
+            on_nav = widget.winfo_toplevel() is self.nav_window
+        except tk.TclError:
+            return
+        if not on_nav:
+            self.nav_return_focus = widget
+            return
+        back = self.nav_return_focus
+        if back is not None and back.winfo_exists():
+            self.after_idle(back.focus_set)
+
+    def own_nav_window(self):
+        """Make this window the navigation window's owner, and stop it ever being activated.
+
+        Owned, it stays above this window, goes when it is minimised and
+        sits beneath any dialog opened later. Never activated, a click on
+        the rail leaves the focus in the console's entry boxes, where the
+        barcode scanner types. Windows only; elsewhere the rail is an
+        ordinary window.
         """
         try:
             import ctypes
-            overlay = tk.Toplevel(self)
-            overlay.withdraw()
-            overlay.overrideredirect(True)
-            # Above this window whichever of the two was last brought
-            # forward; it is only on screen while a slide plays
-            overlay.attributes('-topmost', True)
-            canvas = tk.Canvas(overlay, highlightthickness=0, bd=0, bg=ui.NAVY,
-                               exact_colors=True)
-            canvas.pack(fill='both', expand=True)
-            overlay.update_idletasks()
-
             user32 = ctypes.windll.user32
-            hwnd = user32.GetParent(overlay.winfo_id())
-            GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE = -20, 0x80, 0x08000000
-            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            user32.SetWindowLongW(hwnd, GWL_EXSTYLE,
-                                  style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
-
-            away = self.NAV_OVERLAY_AWAY
-            overlay.geometry(f"1x1+{away}+{away}")
-            overlay.deiconify()
-            overlay.canvas = canvas
-            overlay.pictures = []
-            return overlay
+            user32.GetWindowLongW.restype = ctypes.c_long
+            user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+            user32.SetWindowLongPtrW.restype = ctypes.c_void_p
+            nav = user32.GetParent(self.nav_window.winfo_id())
+            owner = user32.GetParent(self.winfo_id())
+            if not nav or not owner:
+                return
+            GWLP_HWNDPARENT, GWL_EXSTYLE = -8, -20
+            WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE = 0x80, 0x08000000
+            user32.SetWindowLongPtrW(nav, GWLP_HWNDPARENT, owner)
+            style = user32.GetWindowLongW(nav, GWL_EXSTYLE)
+            user32.SetWindowLongW(nav, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
+            # Brought above this window now, without being activated
+            SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x1, 0x2, 0x10
+            user32.SetWindowPos(nav, 0, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
         except Exception as e:
-            print(f"Navigation slide unavailable: {e}")
-            return None
+            print(f"Navigation window not tied to the console: {e}")
 
-    def place_nav(self, shown):
-        """Put the real navigation and its tab where they rest, out or away.
+    def nav_frame_box(self):
+        """Where the navigation's window goes when out: over the page's left edge."""
+        body = self.nav_body
+        width = self.nav_width + self.nav_tab_holder.winfo_reqwidth()
+        return body.winfo_rootx(), body.winfo_rooty(), width, body.winfo_height()
 
-        Only the x position changes, and both pieces are drawn together, so
-        the tab never lags behind the edge it sits on.
+    def place_nav(self, shown, offset=None):
+        """Put the navigation's window where it rests, out or away.
+
+        Away, the rail sits off the window's left edge and only its tab
+        shows. `offset` places it part way, for the slide.
         """
-        x = 0 if shown else -self.nav_width
-        self.nav.place_configure(x=x)
-        self.nav_tab_holder.place_configure(x=x + self.nav_width)
-        self.update_idletasks()
+        if self.nav_slide is not None and offset is None:
+            return      # the slide places it
+        x, y, width, height = self.nav_frame_box()
+        if height <= 1:
+            return
+        if offset is None:
+            offset = 0 if shown else -self.nav_width
+        self.nav_window.geometry(f"{width}x{height}+{x + offset}+{y}")
 
     def toggle_nav(self):
         """Put the navigation away, or bring it back, with the tab on its edge."""
@@ -471,7 +449,7 @@ class MainConsole(tk.Tk):
         if self.nav_hide_job is not None:
             self.after_cancel(self.nav_hide_job)
             self.nav_hide_job = None
-        if self.nav_slide_token is not None:
+        if self.nav_slide is not None:
             self.end_nav_slide()
         if shown == self.nav_open:
             return
@@ -479,134 +457,41 @@ class MainConsole(tk.Tk):
         self.nav_tab.configure(image=ui.icon_image(
             'triangle_left' if shown else 'triangle_right',
             ui.TEXT_ON_DARK, 16))
-        if not self.slide_nav(shown):
-            self.place_nav(shown)
-
-    def window_box(self, widget):
-        """The widget's place in this window, as a bounding box for grab_window()."""
-        x = widget.winfo_rootx() - self.winfo_rootx()
-        y = widget.winfo_rooty() - self.winfo_rooty()
-        return (x, y, x + widget.winfo_width(), y + widget.winfo_height())
+        if not shown:
+            # Clear the hover from the entry just clicked, so the rail
+            # slides away looking at rest
+            for button in self.nav_buttons:
+                button._on_leave()
+        self.slide_nav(shown)
 
     def slide_nav(self, shown):
-        """Slide the navigation out or away over the page, then leave the real one there.
+        """Slide the navigation's window out or away over the page.
 
-        Returns False, having moved nothing, when the slide cannot be played
-        - no slide window, or this window's pixels could not be copied - and
-        the navigation then just jumps.
+        Only the window moves; nothing in it or in the page is redrawn.
         """
-        overlay = self.nav_overlay
-        if overlay is None:
-            return False
-
-        try:
-            from PIL import ImageTk
-
-            if not shown:
-                # Clear the hover from the entry just clicked, so the rail
-                # slides away looking at rest
-                for button in self.nav_buttons:
-                    button._on_leave()
-            self.update_idletasks()
-
-            # The strip the rail and its tab sweep across, in this window
-            body = self.window_box(self.body)
-            tab = self.window_box(self.nav_tab_holder)
-            tab_width, tab_height = tab[2] - tab[0], tab[3] - tab[1]
-            strip = (body[0], body[1], body[0] + self.nav_width + tab_width, body[3])
-            tab_top = tab[1] - body[1]
-            before = grab_window(self, strip)
-        except Exception as e:
-            print(f"Navigation slide skipped: {e}")
-            return False
-
-        slide = object()  # this slide, so later steps can tell it was ended
-        self.nav_slide_token = slide
-
-        # Cover the strip with a picture of it as it stands, so nothing that
-        # happens beneath shows
-        canvas = overlay.canvas
-        canvas.delete('all')
-        overlay.pictures = [ImageTk.PhotoImage(before, master=self)]
-        backdrop = canvas.create_image(0, 0, anchor='nw', image=overlay.pictures[0])
-        overlay.geometry("{}x{}+{}+{}".format(strip[2] - strip[0], strip[3] - strip[1],
-                                              self.winfo_rootx() + strip[0],
-                                              self.winfo_rooty() + strip[1]))
-        self.update()
-        if self.nav_slide_token is not slide:
-            return True  # ended while that ran
-
-        # Beneath it, the rail goes straight to where it ends; the tab waits
-        # out of sight so the page behind it can be pictured
-        self.nav.place_configure(x=0 if shown else -self.nav_width)
-        self.nav_tab_holder.place_configure(x=-self.nav_width - tab_width * 4)
-        self.update()
-        if self.nav_slide_token is not slide:
-            return True
-        try:
-            after = grab_window(self, strip)
-        except Exception as e:
-            print(f"Navigation slide skipped: {e}")
-            self.end_nav_slide()
-            return True
-
-        # Coming out, the rail is pictured once drawn in place; going away,
-        # as it was. The page is whichever picture the rail is not on.
-        rail_source = after if shown else before
-        rail = rail_source.crop((0, 0, self.nav_width, rail_source.height))
-        tab_x = 0 if shown else self.nav_width
-        tab_picture = before.crop((tab_x, tab_top, tab_x + tab_width, tab_top + tab_height))
-        page = before if shown else after
-
-        pictures = [ImageTk.PhotoImage(image, master=self)
-                    for image in (page, rail, tab_picture)]
-        overlay.pictures = pictures
-        start_x, end_x = (-self.nav_width, 0) if shown else (0, -self.nav_width)
-        canvas.itemconfigure(backdrop, image=pictures[0])
-        rail_item = canvas.create_image(start_x, 0, anchor='nw', image=pictures[1])
-        tab_item = canvas.create_image(start_x + self.nav_width, tab_top, anchor='nw',
-                                       image=pictures[2])
+        start, end = (-self.nav_width, 0) if shown else (0, -self.nav_width)
         began = time.perf_counter()
 
         def step():
-            if self.nav_slide_token is not slide:
-                return
             # Placed by the time gone rather than counted steps, so a slow
             # frame is caught up on rather than drawing the slide out
             done = min((time.perf_counter() - began) * 1000 / self.NAV_SLIDE_MS, 1.0)
             eased = 1 - (1 - done) ** 3   # quick away, settling gently
-            x = round(start_x + (end_x - start_x) * eased)
-            canvas.coords(rail_item, x, 0)
-            canvas.coords(tab_item, x + self.nav_width, tab_top)
-            canvas.update_idletasks()
+            self.place_nav(shown, round(start + (end - start) * eased))
             if done < 1.0:
                 self.nav_slide = self.after(8, step)
             else:
-                self.nav_slide = None
                 self.end_nav_slide()
 
+        self.nav_slide = 'starting'
         step()
-        return True
 
     def end_nav_slide(self):
-        """Leave the real navigation and tab where they rest, and put the slide's window away."""
-        if self.nav_slide is not None:
+        """Stop any slide and leave the navigation where it rests."""
+        if self.nav_slide not in (None, 'starting'):
             self.after_cancel(self.nav_slide)
         self.nav_slide = None
-        self.nav_slide_token = None
         self.place_nav(self.nav_open)
-        self.nav.lift()
-        self.nav_tab_holder.lift()
-
-        overlay = self.nav_overlay
-        if overlay is not None:
-            # Drawn beneath the slide's window first, so taking it away
-            # uncovers the finished picture rather than a page mid-redraw
-            self.update()
-            away = self.NAV_OVERLAY_AWAY
-            overlay.geometry(f"1x1+{away}+{away}")
-            overlay.canvas.delete('all')
-            overlay.pictures = []
 
     def nav_button(self, nav, icon, label, command, danger=False):
         button = NavButton(nav, icon, label, command, danger=danger)
