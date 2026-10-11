@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
+import tkinter.font as tkfont
 from PIL import Image, ImageTk
 import customtkinter as ctk
 import os
@@ -928,6 +929,10 @@ class EOLTesterGUI:
 
         spec_frame = tk.Frame(panel, bg='white', highlightthickness=1,
                               highlightbackground=self.EDGE)
+        # Its height is fixed rather than taken from the rows, so stretching
+        # the rows to fill it never makes the top row of the screen taller
+        spec_frame.configure(height=self.SPEC_GRID_HEIGHT)
+        spec_frame.pack_propagate(False)
         spec_frame.pack(fill="both", expand=True)
 
         # Column ids stay as the scoring code knows them; the headings are
@@ -947,7 +952,78 @@ class EOLTesterGUI:
                                   anchor='w' if column == "Description" else 'center')
         self.spec_tree.pack(fill="both", expand=True)
 
+        # Cell borders drawn over the grid, which ttk cannot draw itself
+        self.spec_lines = []
+        self.spec_fit_pending = False
+        self.spec_tree.bind('<Configure>', lambda e: self.fit_spec_grid_soon())
+        self.model_header.bind('<Configure>', lambda e: self.fit_spec_grid_soon())
+
         return panel
+
+    # Height of the specification grid before its rows are stretched: a
+    # heading and eight rows of the old size
+    SPEC_GRID_HEIGHT = 290
+    SPEC_ROW_HEIGHT = 30        # rows when no part is loaded
+    SPEC_ROW_MIN = 20           # the least a row shrinks to, so a long spec still fits
+    SPEC_LINE = '#808080'
+
+    def fit_spec_grid_soon(self):
+        """Fit the grid once the layout settles; resizes come in bursts."""
+        if not self.spec_fit_pending:
+            self.spec_fit_pending = True
+            self.root.after_idle(self.fit_spec_grid)
+
+    def fit_spec_grid(self):
+        """Match the heading to the part header, stretch the rows down the grid, draw borders.
+
+        The heading row is as tall as MODEL NAME / PART NAME - PART NUMBER
+        beside it, and the loaded rows share the height below it equally.
+        """
+        self.spec_fit_pending = False
+        tree = self.spec_tree
+        height = tree.winfo_height()
+        header = self.model_header.winfo_height()
+        if height <= 1 or header <= 1:
+            return
+
+        style = ttk.Style()
+        heading_font = tkfont.Font(font=(self.FONT, 11, 'bold'))
+        # The heading's own border takes a pixel above and below the text
+        padding = max(2, (header - heading_font.metrics('linespace') - 2) // 2)
+        style.configure("Spec.Eol.Treeview.Heading", padding=(4, padding))
+
+        items = tree.get_children()
+        row_height = self.SPEC_ROW_HEIGHT
+        if items:
+            row_height = max(self.SPEC_ROW_MIN, (height - header) // len(items))
+        style.configure("Spec.Eol.Treeview", rowheight=row_height)
+        tree.update_idletasks()
+
+        for line in self.spec_lines:
+            line.destroy()
+        self.spec_lines = []
+
+        def line(**place):
+            mark = tk.Frame(tree, bg=self.SPEC_LINE)
+            mark.place(**place)
+            self.spec_lines.append(mark)
+
+        # Where the first row starts is where the heading really ends
+        top = header
+        if items:
+            box = tree.bbox(items[0])
+            if box:
+                top = box[1]
+        line(x=0, y=top - 1, relwidth=1, height=1)
+        for index in range(1, len(items) + 1):
+            y = top + index * row_height - 1
+            if y < height - 1:
+                line(x=0, y=y, relwidth=1, height=1)
+
+        x = 0
+        for column in tree['columns'][:-1]:
+            x += tree.column(column, 'width')
+            line(x=x - 1, y=0, width=1, relheight=1)
 
     def create_third_quadrant(self):
         """The load and length trend charts and the UPH chart, stacked on black."""
@@ -1988,6 +2064,7 @@ class EOLTesterGUI:
             if hasattr(self, 'spec_tree'):
                 for item in self.spec_tree.get_children():
                     self.spec_tree.delete(item)
+                self.fit_spec_grid_soon()
             
             # Reset test result saved flag
             self.test_result_saved = False
@@ -3376,6 +3453,7 @@ class EOLTesterGUI:
             # Update tree columns based on devices
             if hasattr(self, 'spec_tree'):
                 self.update_tree_columns(set(self.deviceToRead))
+                self.fit_spec_grid_soon()
                 
         except Exception as e:
             print(f"Error loading model specifications: {e}")
