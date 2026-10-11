@@ -727,6 +727,13 @@ class EOLTesterGUI:
         if not getattr(self, 'current_part_number', None):
             messagebox.showwarning("Start Test", "Scan an ALC code to load a part first.")
             return
+        # The OK cables are counted into lots, so a test needs a lot size
+        if not self.lot_size:
+            self.safe_update_message("Enter the lot size, then press START", "red")
+            messagebox.showwarning("Start Test",
+                                   "Enter the lot size in CURRENT LOT PROGRESS before "
+                                   "starting the test.")
+            return
         try:
             connected = bool(self.plc_client) and self.plc_client.is_socket_open()
         except Exception:
@@ -3826,7 +3833,7 @@ class EOLTesterGUI:
 
         self.lot_size = size
         self.log_operator_action("LOT_SIZE_SET", f"Lot size {size} from lot {self.lot_number}")
-        self.safe_update_message(f"Lot size set to {size}", "green")
+        self.safe_update_message(f"Lot size set to {size} - press START to test", "green")
         self.show_lot_progress()
 
     def count_ok_in_lot(self, cursor):
@@ -4092,10 +4099,15 @@ class EOLTesterGUI:
             if is_pull1_ready:
                 # PLC is at pull1 ready state - can start test
                 print("✅ PLC at pull1 ready state - Starting test now")
-                self.safe_update_message(
-                    f"PLC ready at pull1 - Starting test for LOT: {self.next_lot_number()}", 
-                    "green"
-                )
+                if self.lot_size:
+                    self.safe_update_message(
+                        f"PLC ready at pull1 - Starting test for LOT: {self.next_lot_number()}",
+                        "green"
+                    )
+                else:
+                    # START stays refused until there is a lot size
+                    self.safe_update_message("Part loaded - enter the lot size, then press START",
+                                             "orange")
                 self.pull1_wait_counter = 0  # Reset counter
                 
                 # Reset 1st PULL label color from yellow (waiting) to default blue
