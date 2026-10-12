@@ -2388,12 +2388,17 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
         messagebox.showerror("Camera", "OpenCV and Pillow are required.", parent=parent)
         return False
 
-    from vision_engine import camera, load_vision_config, save_vision_config
+    from vision_engine import camera, load_vision_config, save_vision_config, stripe_check
 
     cam = _load_cam_cfg(source)
+    # Camera 2 searches only the region drawn on its preview
+    with_roi = source == stripe_check.CAMERA_SOURCE
+    saved_roi = stripe_check.load_roi() if with_roi else None
     # Taller with the camera's on/off box, so Re-scan still fits beneath it
-    win = _dialog(parent, "Camera Configuration", 820, 680 if check_key else 580)
+    win = _dialog(parent, "Camera Configuration", 860 if with_roi else 820,
+                  (680 if check_key else 580) + (130 if with_roi else 0))
     _dialog_header(win, title,
+                   "Drag on the preview to mark where stripes are looked for." if with_roi else
                    "The preview is the exact feed inspection will use.")
 
     alive = {"v": True}
@@ -2414,9 +2419,12 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
 
     prev_wrap = tk.Frame(body, bg=LINE)
     prev_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-    preview = RoiView(prev_wrap, editable=False)
+    preview = RoiView(prev_wrap, editable=with_roi,
+                      on_change=lambda r, final: _roi_changed(r))
     preview.pack(fill="both", expand=True, padx=1, pady=1)
     preview.set_placeholder("Scanning for cameras…")
+    if saved_roi and tuple(saved_roi["frame_size"]) == (cam["width"], cam["height"]):
+        preview.set_roi(saved_roi, notify=False)
 
     rail = tk.Frame(body, bg=BG, width=270)
     rail.grid(row=0, column=1, sticky="ns")
@@ -2482,6 +2490,29 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
 
     btn_rescan = _btn(cb_body, "Re-scan", BTN_NEUTRAL, pady=5, icon="refresh")
     btn_rescan.pack(fill="x", pady=(10, 0))
+
+    roi_lbl = None
+    if with_roi:
+        roi_card = _card(rail, "Detection region", icon="box")
+        roi_card.pack(fill="x", pady=(12, 0))
+        roi_lbl = tk.Label(roi_card.body, text="", bg=PANEL, fg=TXT_DIM, font=(FONT, 10),
+                           wraplength=215, justify="left", anchor="w")
+        roi_lbl.pack(fill="x")
+        _btn(roi_card.body, "Whole frame", BTN_NEUTRAL, pady=5,
+             command=lambda: preview.set_roi(None)).pack(fill="x", pady=(8, 0))
+
+    def _roi_changed(roi):
+        if roi_lbl is None:
+            return
+        if roi:
+            roi_lbl.config(text="Only stripes inside the box are counted (%d x %d px at "
+                                "%d, %d)." % (roi["width"], roi["height"], roi["x"], roi["y"]),
+                           fg=TXT_DIM)
+        else:
+            roi_lbl.config(text="The whole frame is searched. Drag on the preview to "
+                                "limit it to the fixture.", fg=TXT_FAINT)
+
+    _roi_changed(preview.get_roi())
 
     status = tk.Label(rail, text="", bg=BG, fg=TXT_DIM, font=(FONT, 11),
                       wraplength=250, justify="left", anchor="w")
@@ -2597,6 +2628,9 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
                 return
         try:
             _save_cam_cfg(idx, w, h, idx >= 0, source)
+            if with_roi:
+                # The box is in the preview's pixels, which are this resolution's
+                stripe_check.save_roi(preview.get_roi(), (w, h))
             if check_key and check_now != check_was:
                 v_cfg = load_vision_config()
                 v_cfg[check_key] = check_now

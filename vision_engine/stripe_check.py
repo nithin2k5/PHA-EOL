@@ -9,7 +9,8 @@ group of the expected number of stripes, in the expected colour, at the size
 the good part showed when it was taught.
 
 The part does not have to sit in a fixed place: the whole frame is searched,
-and the cable may lie at any angle.
+or only the detection region when one is drawn for camera 2, and the cable
+may lie at any angle.
 
 Methodology:
   - Teach: the operator boxes the stripe group on a good part. The stripes'
@@ -34,9 +35,12 @@ import cv2
 import numpy as np
 
 from . import camera
-from .vision_controller import load_camera_config
+from .vision_controller import load_camera_config, load_vision_config, save_vision_config
 
 CAMERA_SOURCE = "cam2"
+
+# vision_config.json key holding the part of camera 2's frame that is searched
+ROI_KEY = "cam2_roi"
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
 _MODELS_DIR = os.path.join(_ROOT_DIR, "vision_models", "stripes")
@@ -287,6 +291,33 @@ def capture_frame() -> Optional[np.ndarray]:
     if index < 0:
         return None
     return camera.grab(index, width, height)
+
+
+def load_roi() -> Optional[dict]:
+    """The region of camera 2's frame that is searched, or None for all of it.
+
+    Holds "x", "y", "width", "height" and the "frame_size" it was drawn on.
+    """
+    roi = load_vision_config().get(ROI_KEY)
+    if not roi:
+        return None
+    try:
+        return {"x": int(roi["x"]), "y": int(roi["y"]),
+                "width": int(roi["width"]), "height": int(roi["height"]),
+                "frame_size": [int(v) for v in roi["frame_size"]]}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def save_roi(roi: Optional[dict], frame_size: Tuple[int, int]):
+    """Search only this region of camera 2's frame; None searches all of it."""
+    cfg = load_vision_config()
+    if roi:
+        cfg[ROI_KEY] = {k: int(roi[k]) for k in ("x", "y", "width", "height")}
+        cfg[ROI_KEY]["frame_size"] = [int(frame_size[0]), int(frame_size[1])]
+    else:
+        cfg.pop(ROI_KEY, None)
+    save_vision_config(cfg)
 
 
 # ── Analysis ────────────────────────────────────────────────────────────────
@@ -597,8 +628,23 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
         return _error(f"Camera 2 gives {frame.shape[1]}x{frame.shape[0]} frames, "
                       f"but this part was taught at {fw}x{fh}. Re-teach it.")
 
-    masks = colour_masks(frame)
-    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
+    # Only the detection region is searched, so paint elsewhere in the frame,
+    # such as another cable or a mat beside the fixture, is never counted.
+    # Stripes crossing its edge are left out, as at the edge of the frame.
+    region = frame
+    x0 = y0 = 0
+    roi = load_roi()
+    if roi is not None:
+        if tuple(roi["frame_size"]) != (frame.shape[1], frame.shape[0]):
+            return _error(f"Camera 2's detection region was drawn on "
+                          f"{roi['frame_size'][0]}x{roi['frame_size'][1]} frames, but it "
+                          f"gives {frame.shape[1]}x{frame.shape[0]}. Redraw the region.")
+        region, (x0, y0, _, _) = _crop(frame, roi, 0.0)
+        if region.shape[0] < 8 or region.shape[1] < 8:
+            return _error("Camera 2's detection region is too small. Redraw it.")
+
+    masks = colour_masks(region)
+    lab = cv2.cvtColor(region, cv2.COLOR_BGR2LAB).astype(np.float32)
     colour, expected = model["colour"], model["count"]
     count, ok, bands = _judge(masks, lab, colour, model)
 
@@ -617,7 +663,7 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
                 if other_ok:
                     break
 
-    boxes = [b["box"] for b in bands]
+    boxes = [b["box"] + np.array([x0, y0], np.float32) for b in bands]
     found_box = (cv2.boundingRect(np.vstack(boxes).astype(np.int32)) if boxes else None)
     elapsed = int((time.time() - start) * 1000)
     return StripeResult(
