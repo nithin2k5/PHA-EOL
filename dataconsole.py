@@ -286,9 +286,12 @@ class DataConsole:
             picture = tk.Label(frame, bg=ui.SUBTLE, fg=ui.TEXT_MUTED,
                                font=ui.FONT_BODY, text="Select a row")
             picture.pack(fill=tk.BOTH, expand=True)
-            panel = {"verdict": verdict, "picture": picture, "image": None, "photo": None}
+            panel = {"verdict": verdict, "picture": picture, "image": None, "photo": None,
+                     "title": title}
             # Fit the picture again whenever the panel changes size
             picture.bind("<Configure>", lambda e, p=panel: self.fit_picture(p))
+            # The panel is small; click it to look at the picture properly
+            picture.bind("<Button-1>", lambda e, p=panel: self.open_picture(p))
             self.camera_panels[key] = panel
 
     def show_cameras(self, event=None):
@@ -310,6 +313,7 @@ class DataConsole:
                 else:
                     note = "No picture was taken for this test"
                 panel["picture"].configure(image="", text=note)
+            panel["picture"].configure(cursor="hand2" if panel["image"] is not None else "")
             self.fit_picture(panel)
 
     @staticmethod
@@ -328,6 +332,95 @@ class DataConsole:
         panel["photo"] = ImageTk.PhotoImage(
             Image.fromarray(rgb).resize(size, Image.Resampling.BILINEAR))
         label.configure(image=panel["photo"], text="")
+
+    def open_picture(self, panel):
+        """Show a camera panel's picture in a window of its own.
+
+        It opens fitted to the window. The wheel zooms in on the point under
+        the pointer, dragging moves the picture, a double-click fits it
+        again, and Escape closes the window.
+        """
+        img = panel["image"]
+        if img is None:
+            return
+        verdict = panel["verdict"].cget("text")
+        win = tk.Toplevel(self.root, bg="black")
+        win.title(f"{panel['title']} - {verdict}" if verdict else panel["title"])
+        win.transient(self.root)
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        ww, wh = int(sw * 0.8), int(sh * 0.8)
+        win.geometry(f"{ww}x{wh}+{(sw - ww) // 2}+{(sh - wh) // 3}")
+        canvas = tk.Canvas(win, bg="black", highlightthickness=0, cursor="fleur")
+        canvas.pack(fill=tk.BOTH, expand=True)
+        tk.Label(win, text="Wheel: zoom    Drag: move    Double-click: fit    Esc: close",
+                 bg=ui.NAVY, fg=ui.TEXT_ON_DARK, font=ui.FONT_BODY).pack(fill=tk.X)
+
+        rgb = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        # Scale is screen pixels per picture pixel; (ox, oy) is where the
+        # picture's top-left corner sits on the canvas
+        view = {"scale": None, "ox": 0.0, "oy": 0.0, "drag": None, "photo": None}
+
+        def fit():
+            cw, ch = canvas.winfo_width(), canvas.winfo_height()
+            if cw < 10 or ch < 10:
+                return
+            view["scale"] = min(cw / rgb.width, ch / rgb.height)
+            view["ox"] = (cw - rgb.width * view["scale"]) / 2
+            view["oy"] = (ch - rgb.height * view["scale"]) / 2
+            draw()
+
+        def draw():
+            s = view["scale"]
+            cw, ch = canvas.winfo_width(), canvas.winfo_height()
+            canvas.delete("all")
+            # Scale only the part on screen, so a close zoom stays quick
+            x0 = max(0, int(-view["ox"] / s))
+            y0 = max(0, int(-view["oy"] / s))
+            x1 = min(rgb.width, int((cw - view["ox"]) / s) + 2)
+            y1 = min(rgb.height, int((ch - view["oy"]) / s) + 2)
+            if x1 <= x0 or y1 <= y0:
+                return
+            size = (max(1, round((x1 - x0) * s)), max(1, round((y1 - y0) * s)))
+            # Close in, show the real pixels rather than a blur
+            resample = Image.Resampling.NEAREST if s >= 3 else Image.Resampling.BILINEAR
+            view["photo"] = ImageTk.PhotoImage(rgb.crop((x0, y0, x1, y1)).resize(size, resample))
+            canvas.create_image(view["ox"] + x0 * s, view["oy"] + y0 * s,
+                                image=view["photo"], anchor="nw")
+
+        def zoom(event):
+            if view["scale"] is None:
+                return
+            cw, ch = canvas.winfo_width(), canvas.winfo_height()
+            least = min(cw / rgb.width, ch / rgb.height)
+            factor = 1.25 if event.delta > 0 else 1 / 1.25
+            new = min(max(view["scale"] * factor, least), least * 16)
+            # Keep the picture point under the pointer where it is
+            ix = (event.x - view["ox"]) / view["scale"]
+            iy = (event.y - view["oy"]) / view["scale"]
+            view["scale"] = new
+            view["ox"], view["oy"] = event.x - ix * new, event.y - iy * new
+            if new <= least * 1.0001:
+                fit()
+            else:
+                draw()
+
+        def press(event):
+            view["drag"] = (event.x, event.y, view["ox"], view["oy"])
+
+        def move(event):
+            if view["drag"] and view["scale"] is not None:
+                x, y, ox, oy = view["drag"]
+                view["ox"], view["oy"] = ox + event.x - x, oy + event.y - y
+                draw()
+
+        canvas.bind("<Configure>", lambda e: fit())
+        canvas.bind("<MouseWheel>", zoom)
+        canvas.bind("<ButtonPress-1>", press)
+        canvas.bind("<B1-Motion>", move)
+        canvas.bind("<ButtonRelease-1>", lambda e: view.update(drag=None))
+        canvas.bind("<Double-Button-1>", lambda e: fit())
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.focus_set()
 
     # ------------------------------------------------------------------
     # Data
