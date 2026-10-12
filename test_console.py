@@ -4881,10 +4881,16 @@ class EOLTesterGUI:
                 # All tests passed, and each camera the app checked passed
                 # too, or had nothing to check. A camera error fails the part
                 # as well: what it looks for was never confirmed.
-                self.save_testing_data("OK")
-                # Print barcode if configured
+                saved = self.save_testing_data("OK")
+                # Print barcode if configured, and only once the test is in
+                # the database
                 if self.barcodePrintFileName and self.barcodePrintFileName != "NO_BARCODE_PRINT_FILE":
-                    self.print_barcode_label_async()
+                    if saved:
+                        self.print_barcode_label_async()
+                    else:
+                        self.trace("LABEL NOT PRINTED - test data was not saved")
+                        self.safe_update_message(
+                            "Label not printed - the test data could not be saved.", "red")
             else:
                 # Some tests failed
                 self.save_testing_data("NG")
@@ -5021,12 +5027,18 @@ class EOLTesterGUI:
         self.P04Value = 0.0
 
     def save_testing_data(self, status):
-        """Save testing data to database"""
+        """Save testing data to database.
+
+        Returns True once the test's record is committed, and False if it
+        never was. A label is printed only for a saved test, so every label
+        on a cable has its record behind it.
+        """
+        saved = False
         try:
             connection = self.get_database_connection()
             if not connection:
                 messagebox.showerror("Database Error", "Failed to connect to database for saving results")
-                return
+                return False
                 
             cursor = connection.cursor()
             
@@ -5096,6 +5108,7 @@ class EOLTesterGUI:
                 self.cam1Image, self.cam2Image,
             ))
             connection.commit()
+            saved = True
 
             print(f"Test data saved: {status} - Lot: {self.lotNo}, Traceability: {self.traceabilityCode}")
             self.trace(f"SAVED {status} - lot {self.lotNo}, {self.traceabilityCode}")
@@ -5117,6 +5130,7 @@ class EOLTesterGUI:
         except Exception as e:
             print(f"Error saving testing data: {e}")
             messagebox.showerror("Database Error", f"Failed to save test data: {e}")
+        return saved
 
     def update_part_running_serial(self, cursor):
         """Update or insert part running serial record"""
