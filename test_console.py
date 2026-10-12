@@ -1916,12 +1916,13 @@ class EOLTesterGUI:
     CAMERA_NG_IMAGE_WIDTH = 480
     REGION_INK = (0, 0, 255)        # BGR red
 
-    def with_detection_region(self, name, frame):
+    def with_detection_region(self, frame):
         """A copy of camera 2's frame with its detection region drawn on it.
 
-        Camera 1's frame is returned as it is; its match is outlined already.
+        The frame is returned as it is when no region is drawn, or it was
+        drawn at another resolution.
         """
-        if name != "CAM2" or frame is None or stripe_check is None:
+        if frame is None or stripe_check is None:
             return frame
         roi = stripe_check.load_roi()
         if roi is None or tuple(roi["frame_size"]) != (frame.shape[1], frame.shape[0]):
@@ -1939,8 +1940,8 @@ class EOLTesterGUI:
         """Flash "CAM1 CHECK RESULT: NG" over the console for four seconds.
 
         `cameras` lists (name, frame) for each camera that judged NG; each
-        frame is shown with what was found outlined and, for camera 2, the
-        region it searched. It takes no click and holds neither the keyboard
+        frame is shown as judged, with what was found outlined and, for
+        camera 2, the region it searched. It takes no click and holds neither the keyboard
         nor the test, so the PLC carries on while it shows. A newer one
         replaces it.
         """
@@ -1966,7 +1967,6 @@ class EOLTesterGUI:
         for name, frame in cameras:
             if frame is None:
                 continue
-            frame = self.with_detection_region(name, frame)
             scale = self.CAMERA_NG_IMAGE_WIDTH / frame.shape[1]
             size = (self.CAMERA_NG_IMAGE_WIDTH, max(1, int(frame.shape[0] * scale)))
             rgb = Image.fromarray(frame[..., ::-1].copy())     # BGR to RGB
@@ -2062,10 +2062,13 @@ class EOLTesterGUI:
                     out["cam2"] = result
                     verdict = self.verdict_of(result)
                     if result.frame is not None:
+                        # The region searched goes on the picture, PASS or NG,
+                        # so the console, the NG pop-up and Work Data all show it
+                        framed = self.with_detection_region(result.frame)
                         out["cam2_frame"] = captures.outlined(
-                            result.frame, result.stripe_boxes, verdict)
+                            framed, result.stripe_boxes, verdict)
                         out["cam2_image"] = captures.save(
-                            result.frame, "CAM2", part_number, verdict,
+                            framed, "CAM2", part_number, verdict,
                             result.seen, result.stripe_boxes)
                 elif cam2_on:
                     frame = stripe_check.capture_frame()
