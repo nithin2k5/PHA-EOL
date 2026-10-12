@@ -3221,14 +3221,17 @@ def _open_stripe_teach(parent, part_number=None):
         # start from the groups the part was taught with
         if size_was is not None and size_was != img.shape[:2]:
             groups[:] = [_new_group()]
+        reloaded = False
         if (all(g["roi"] is None for g in groups) and previous
                 and previous.get("frame_size") == [img.shape[1], img.shape[0]]):
             groups[:] = [_new_group(g.get("roi"), g.get("region"))
                          for g in stripe_check.groups_of(previous)] or [_new_group()]
+            reloaded = True
         for g in groups:
             _analyse(g)
-        # Straight on to the first group that still needs something
-        active["i"] = _first_unready()
+        # A re-teach opens on group 1, so its box can be checked against the
+        # new picture; otherwise straight on to the first group still to do
+        active["i"] = 0 if reloaded else _first_unready()
         draw["mode"] = "box"
         view.set_image(img, keep_roi=False)
         short = label if len(label) <= 24 else label[:21] + "…"
