@@ -27,6 +27,7 @@ from plc_address import bit_address
 # kept with each test. Without OpenCV the console still runs, camera 2 shows
 # OFF and no pictures are kept.
 try:
+    import cv2
     import numpy as np
     from vision_engine import camera, captures, stripe_check
     from vision_engine import (VisionController, load_camera_config, load_vision_config,
@@ -140,6 +141,12 @@ class LiveCameraView(tk.Frame):
 
     def resume(self):
         self.held = None
+
+    def current(self):
+        """The frame on screen: the one held, else the stream's latest, else None."""
+        if self.held is not None:
+            return self.held
+        return self.stream.latest() if self.stream is not None else None
 
     def refresh(self):
         if not self.winfo_exists():
@@ -1766,7 +1773,7 @@ class EOLTesterGUI:
             text, fill = "NG", '#FF0000'
             # The coils are read over and over; say so once, as it turns NG
             if self.cam1Result != "NG":
-                self.show_camera_ng_popup(["CAM1"])
+                self.show_camera_ng_popup([("CAM1", self.cam1_view.current())])
             self.cam1Result = "NG"
         else:
             text, fill = "ON", self.SKY
@@ -1906,12 +1913,36 @@ class EOLTesterGUI:
         self.cam2_view.set_status(result, fills.get(result, self.SKY))
 
     CAMERA_NG_POPUP_MS = 3000
+    CAMERA_NG_IMAGE_WIDTH = 480
+    REGION_INK = (255, 255, 0)      # BGR cyan, apart from the verdict's red and green
+
+    def with_detection_region(self, name, frame):
+        """A copy of camera 2's frame with its detection region drawn on it.
+
+        Camera 1's frame is returned as it is; its match is outlined already.
+        """
+        if name != "CAM2" or frame is None or stripe_check is None:
+            return frame
+        roi = stripe_check.load_roi()
+        if roi is None or tuple(roi["frame_size"]) != (frame.shape[1], frame.shape[0]):
+            return frame
+        img = frame.copy()
+        x, y, w, h = roi["x"], roi["y"], roi["width"], roi["height"]
+        thick = max(2, frame.shape[1] // 320)
+        cv2.rectangle(img, (x, y), (x + w, y + h), self.REGION_INK, thick)
+        cv2.putText(img, "DETECTION REGION", (x + 4, max(y - 8, 18)),
+                    cv2.FONT_HERSHEY_SIMPLEX, max(0.5, frame.shape[1] / 1280),
+                    self.REGION_INK, thick)
+        return img
 
     def show_camera_ng_popup(self, cameras):
         """Flash "CAM1 CHECK RESULT: NG" over the console for three seconds.
 
-        It takes no click and holds neither the keyboard nor the test, so
-        the PLC carries on while it shows. A newer one replaces it.
+        `cameras` lists (name, frame) for each camera that judged NG; each
+        frame is shown with what was found outlined and, for camera 2, the
+        region it searched. It takes no click and holds neither the keyboard
+        nor the test, so the PLC carries on while it shows. A newer one
+        replaces it.
         """
         old = getattr(self, 'camera_ng_popup', None)
         if old is not None and old.winfo_exists():
@@ -1921,13 +1952,31 @@ class EOLTesterGUI:
         popup.attributes('-topmost', True)
         self.camera_ng_popup = popup
 
-        names = " AND ".join(cameras)
+        names = " AND ".join(name for name, _ in cameras)
         body = tk.Frame(popup, bg='white')
         body.pack(fill="both", expand=True, padx=4, pady=4)
         tk.Label(body, text="CAMERA CHECK NG", bg=ui.DANGER, fg='white',
                  font=(self.FONT, 18, 'bold'), padx=40, pady=10).pack(fill="x")
         tk.Label(body, text=f"{names} CHECK RESULT: NG", bg='white', fg=ui.DANGER,
-                 font=(self.FONT, 26, 'bold'), padx=40, pady=24).pack()
+                 font=(self.FONT, 26, 'bold'), padx=40, pady=16).pack()
+
+        pictures = tk.Frame(body, bg='white')
+        pictures.pack(padx=20, pady=(0, 20))
+        popup.photos = []           # Tk shows an image only while it is referenced
+        for name, frame in cameras:
+            if frame is None:
+                continue
+            frame = self.with_detection_region(name, frame)
+            scale = self.CAMERA_NG_IMAGE_WIDTH / frame.shape[1]
+            size = (self.CAMERA_NG_IMAGE_WIDTH, max(1, int(frame.shape[0] * scale)))
+            rgb = Image.fromarray(frame[..., ::-1].copy())     # BGR to RGB
+            photo = ImageTk.PhotoImage(rgb.resize(size, Image.Resampling.BILINEAR))
+            popup.photos.append(photo)
+            cell = tk.Frame(pictures, bg='white')
+            cell.pack(side="left", padx=8)
+            tk.Label(cell, image=photo, bg='black', bd=2, relief="solid").pack()
+            tk.Label(cell, text=name, bg='white', fg='black',
+                     font=(self.FONT, 14, 'bold')).pack(pady=(4, 0))
 
         popup.update_idletasks()
         x = self.root.winfo_rootx() + (self.root.winfo_width() - popup.winfo_reqwidth()) // 2
@@ -2067,8 +2116,9 @@ class EOLTesterGUI:
             # Say so at once; the part is failed when the test is saved
             if problems:
                 self.safe_update_message("  |  ".join(problems), "red")
-            ng = [name for name, verdict in (("CAM1", self.cam1Result if check_cam1 else ""),
-                                             ("CAM2", self.cam2Result))
+            ng = [(name, frame) for name, verdict, frame in (
+                      ("CAM1", self.cam1Result if check_cam1 else "", out.get("cam1_frame")),
+                      ("CAM2", self.cam2Result, out.get("cam2_frame")))
                   if verdict == "NG"]
             if ng:
                 self.show_camera_ng_popup(ng)
