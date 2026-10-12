@@ -1912,9 +1912,9 @@ class EOLTesterGUI:
                  "OFF": self.SILVER, "CHECKING": self.SKY}
         self.cam2_view.set_status(result, fills.get(result, self.SKY))
 
-    CAMERA_NG_POPUP_MS = 3000
+    CAMERA_NG_POPUP_MS = 4000
     CAMERA_NG_IMAGE_WIDTH = 480
-    REGION_INK = (255, 255, 0)      # BGR cyan, apart from the verdict's red and green
+    REGION_INK = (0, 0, 255)        # BGR red
 
     def with_detection_region(self, name, frame):
         """A copy of camera 2's frame with its detection region drawn on it.
@@ -1936,7 +1936,7 @@ class EOLTesterGUI:
         return img
 
     def show_camera_ng_popup(self, cameras):
-        """Flash "CAM1 CHECK RESULT: NG" over the console for three seconds.
+        """Flash "CAM1 CHECK RESULT: NG" over the console for four seconds.
 
         `cameras` lists (name, frame) for each camera that judged NG; each
         frame is shown with what was found outlined and, for camera 2, the
