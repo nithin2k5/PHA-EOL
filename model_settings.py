@@ -2361,11 +2361,15 @@ class WorkspaceApp:
     #   idle  - nothing chosen. Only NEW is available, plus EDIT and DELETE
     #           once a part has been picked out of the parts list.
     #   ADD   - entering a part that does not exist yet. Everything is open.
-    #   EDIT  - amending a part that does. Same, except the part number is
-    #           the record's identity and stays locked.
+    #   EDIT  - amending a part that does. Same, except the part number and
+    #           ALC code stay locked (see LOCKED_ON_EDIT).
     #
     # Without this, every button is live at all times and SAVE has to guess
     # from edit_mode whether it was meant to insert or update.
+
+    # The part number is the record's identity, and testing finds the part
+    # by its ALC code, so neither changes once the part exists
+    LOCKED_ON_EDIT = ("Part Number", "ALC Code")
 
     def _set_button_state(self, name, enabled):
         """Enable or disable one of the named action buttons, if it exists."""
@@ -2403,10 +2407,10 @@ class WorkspaceApp:
             self._set_spec_buttons_state(add_enabled=True, remove_enabled=False)
 
         elif action == "EDIT":
-            # An existing part: the part number is the record's identity and
-            # edit_record() locks it, so it is deliberately left alone here.
+            # An existing part: edit_record() locks the fields in
+            # LOCKED_ON_EDIT, so they are deliberately left alone here.
             for key, entry in self.textboxes.items():
-                if key not in ("Part Number", "Image File Path"):
+                if key not in self.LOCKED_ON_EDIT and key != "Image File Path":
                     entry.config(state='normal')
             for combo in self.second_quad_combos.values():
                 combo.config(state='normal')
@@ -2494,12 +2498,11 @@ class WorkspaceApp:
         # DELETE step aside until this edit is finished.
         self.enable_components("EDIT")
 
-        # Enable all textboxes for editing (except Part Number and Image File Path)
+        # Enable all textboxes for editing (except the locked ones and Image File Path)
         for key, entry in self.textboxes.items():
-            if key == "Part Number":
-                # Part Number cannot be changed (it's the primary key)
+            if key in self.LOCKED_ON_EDIT:
                 entry.config(state='readonly', bg='#ffe6e6')  # Light red to indicate locked
-                print(f"Part Number field locked: {entry.get()}")
+                print(f"{key} field locked: {entry.get()}")
             elif key != "Image File Path":  # Keep Image File Path readonly
                 entry.config(state='normal', bg=ui.SURFACE)
                 if entry.get() == self.PLACEHOLDERS[key]:
@@ -2525,8 +2528,9 @@ class WorkspaceApp:
             "Edit Mode Enabled", 
             f"✎ Edit Mode Active\n\n" +
             f"Part Number: {part_number} (locked)\n" +
+            f"ALC Code: {self.entry_value('ALC Code')} (locked)\n" +
             f"Model: {model_name}\n\n" +
-            "• You can now modify all fields except Part Number\n" +
+            "• You can now modify all fields except Part Number and ALC Code\n" +
             "• Upload a new image if needed (optional)\n" +
             "• An image MUST be present before saving\n" +
             "• Click SAVE to update this part\n" +
