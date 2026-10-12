@@ -1914,10 +1914,12 @@ class EOLTesterGUI:
 
     CAMERA_NG_POPUP_MS = 4000
     CAMERA_NG_IMAGE_WIDTH = 480
-    REGION_INK = (0, 0, 255)        # BGR red
+    # The detection region's colour on camera 2's picture, by verdict (BGR)
+    REGION_INK = {"PASS": (0, 160, 0), "NG": (0, 0, 255)}
 
-    def with_detection_region(self, frame):
-        """A copy of camera 2's frame with its detection region drawn on it.
+    def with_detection_region(self, frame, verdict):
+        """A copy of camera 2's frame with its detection region drawn on it,
+        green for PASS and red otherwise.
 
         The frame is returned as it is when no region is drawn, or it was
         drawn at another resolution.
@@ -1930,10 +1932,11 @@ class EOLTesterGUI:
         img = frame.copy()
         x, y, w, h = roi["x"], roi["y"], roi["width"], roi["height"]
         thick = max(2, frame.shape[1] // 320)
-        cv2.rectangle(img, (x, y), (x + w, y + h), self.REGION_INK, thick)
+        ink = self.REGION_INK.get(verdict, self.REGION_INK["NG"])
+        cv2.rectangle(img, (x, y), (x + w, y + h), ink, thick)
         cv2.putText(img, "DETECTION REGION", (x + 4, max(y - 8, 18)),
                     cv2.FONT_HERSHEY_SIMPLEX, max(0.5, frame.shape[1] / 1280),
-                    self.REGION_INK, thick)
+                    ink, thick)
         return img
 
     def show_camera_ng_popup(self, cameras):
@@ -2064,7 +2067,7 @@ class EOLTesterGUI:
                     if result.frame is not None:
                         # The region searched goes on the picture, PASS or NG,
                         # so the console, the NG pop-up and Work Data all show it
-                        framed = self.with_detection_region(result.frame)
+                        framed = self.with_detection_region(result.frame, verdict)
                         out["cam2_frame"] = captures.outlined(
                             framed, result.stripe_boxes, verdict)
                         out["cam2_image"] = captures.save(
