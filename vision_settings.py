@@ -2404,6 +2404,8 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     a box for it; `allow_check_change(window)` is asked when the box is
     clicked, and returns False to leave it as it was. For camera 2,
     `part_number` adds that part's stripe group areas to what can be drawn.
+    The areas decide what passes, so with `allow_check_change` they stay
+    locked until it allows a change too; one login unlocks both.
     """
     if not _cv2_ok or not _pil_ok:
         messagebox.showerror("Camera", "OpenCV and Pillow are required.", parent=parent)
@@ -2491,6 +2493,7 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
         if allow_check_change(win):
             check_allowed["v"] = True
             check_var.set(wanted)
+            _paint_areas()      # the same login unlocks the areas
 
     if check_key:
         v_cfg = load_vision_config()
@@ -2566,6 +2569,14 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
         btn_clear_area = _btn(rb, "Whole frame", BTN_NEUTRAL, pady=5,
                               command=lambda: preview.set_roi(None))
         btn_clear_area.pack(fill="x", pady=(8, 0))
+        # Locked until a login; the box above takes the same one
+        btn_unlock = _btn(rb, "Log In to Change Areas", BTN_PRIMARY, pady=5,
+                          command=lambda: _unlock_areas())
+
+    def _unlock_areas():
+        if allow_check_change(win):
+            check_allowed["v"] = True
+            _paint_areas()
 
     def _res():
         return tuple(int(v) for v in res_var.get().split("x"))
@@ -2580,7 +2591,12 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
             return
         t = targets[target["i"]]
         res = _res()
-        preview.set_editable(_usable(t))
+        unlocked = check_allowed["v"]
+        preview.set_editable(_usable(t) and unlocked)
+        if unlocked:
+            btn_unlock.pack_forget()
+        else:
+            btn_unlock.pack(fill="x", pady=(8, 0))
         preview.set_accent(OK_GREEN if t["short"] == "camera" else GROUP_INK)
         preview.set_roi(t["roi"] if t["size"] == res else None, notify=False)
         frames = []
@@ -2626,7 +2642,10 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
                 text = ("%s looks anywhere in camera 2's region. Drag an area round its "
                         "stripes to look for it only there." % t["label"].split("  ·")[0])
             roi_lbl.config(text=text, fg=TXT_DIM if roi else TXT_FAINT)
-        _set_btn_enabled(btn_clear_area, _usable(t) and roi is not None)
+        if not check_allowed["v"]:
+            roi_lbl.config(text=roi_lbl.cget("text") + "\n\nLog in to change it.")
+        _set_btn_enabled(btn_clear_area, _usable(t) and roi is not None
+                         and check_allowed["v"])
 
     def _pick_target(i):
         target["i"] = i
