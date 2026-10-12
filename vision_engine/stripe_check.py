@@ -3,25 +3,29 @@ vision_engine/stripe_check.py
 =============================
 Checks the painted stripes on a cable with the second camera ("cam2").
 
-Each part number has a group of painted bands round its cable, for example
-three yellow stripes on a black cable. A check passes when the frame holds a
-group of the expected number of stripes, in the expected colour, at the size
-the good part showed when it was taught.
+Each part number has one or more groups of painted bands round its cable,
+for example three yellow stripes near one end and two red ones near the
+other. A check passes when every group is found: the expected number of
+stripes, in the expected colour, at the size the good part showed when it
+was taught.
 
-The part does not have to sit in a fixed place: the whole frame is searched,
-or only the detection region when one is drawn for camera 2, and the cable
-may lie at any angle.
+Each group is searched for in its own search region, drawn for the part.
+A group without one is searched for in camera 2's detection region, or the
+whole frame when that isn't drawn either. Inside its region the part need
+not sit in a fixed place, and the cable may lie at any angle.
 
 Methodology:
-  - Teach: the operator boxes the stripe group on a good part. The stripes'
-    colour, count, size and spacing are read from that box and saved per
-    part number. The box only says which stripes to learn from.
+  - Teach: the operator boxes each stripe group on a good part, and may draw
+    a search region round it. Each group's colour, count, size and spacing
+    are read from its box and saved per part number. The box only says which
+    stripes to learn from.
   - Inspect: pixels of the expected colour anywhere in the frame are grouped
     into bands. Bands far from the taught stripe size, such as specks on the
     background or a mat of the same colour, are dropped. Bands lying close
     together form a group, and each group is counted along its own cable
     direction, so stripes that touch still count separately.
-  - Result: OK if any group matches the taught count and group length.
+  - Result: OK if, for every taught group, some group of bands in its
+    region matches its count and length.
 """
 import json
 import math
@@ -64,8 +68,22 @@ CONTRAST_SHARE = 0.35
 
 
 @dataclass
+class GroupResult:
+    """How one taught stripe group fared."""
+    ok: bool
+    colour: str
+    expected: int                   # stripes taught
+    count: int = 0                  # stripes of its colour found
+    seen: str = ""                  # e.g. "red x3"
+    # The part of the frame searched, (x, y, w, h); None for all of it
+    region: Optional[Tuple[int, int, int, int]] = None
+    stripe_boxes: List[np.ndarray] = field(default_factory=list)
+
+
+@dataclass
 class StripeResult:
-    """Outcome of one stripe check."""
+    """Outcome of one stripe check. With several groups, the colour, count
+    and seen fields sum them up; `groups` has each one."""
     ok: bool
     judgement: str                  # "OK", "NG", "ERROR"
     part_number: str = ""
@@ -80,6 +98,7 @@ class StripeResult:
     stripe_boxes: List[np.ndarray] = field(default_factory=list)
     found_box: Optional[Tuple[int, int, int, int]] = None    # round the group judged
     frame: Optional[np.ndarray] = None
+    groups: List[GroupResult] = field(default_factory=list)
 
 
 # ── Colour masks ────────────────────────────────────────────────────────────
@@ -238,6 +257,26 @@ def load_model(part_number: str) -> Optional[dict]:
             return json.load(f)
     except (OSError, ValueError):
         return None
+
+
+def groups_of(model: dict) -> List[dict]:
+    """The stripe groups of a model.
+
+    A model taught before parts could have several groups is itself the one
+    group, with no search region of its own.
+    """
+    if "groups" in model:
+        return list(model["groups"])
+    return [dict(model, region=None)] if "colour" in model else []
+
+
+def describe(model: dict) -> str:
+    """The stripes a model expects, e.g. "yellow × 3 + red × 2"."""
+    groups = groups_of(model)
+    if not groups:
+        return "?"
+    return " + ".join("%s × %s" % (g.get("colour", "?"), g.get("count", "?"))
+                      for g in groups)
 
 
 def has_model(part_number: str) -> bool:
@@ -424,12 +463,56 @@ def read_stripes(frame: np.ndarray, roi: dict, colour: Optional[str] = None,
     return model, boxes
 
 
-def teach(part_number: str, frame: np.ndarray, roi: dict,
-          colour: Optional[str] = None, count: Optional[int] = None) -> dict:
-    """Read a good part's stripes from the box and save them for the part."""
-    model, _ = read_stripes(frame, roi, colour, count)
-    model = dict(part_number=part_number,
-                 created=time.strftime("%Y-%m-%dT%H:%M:%S"), **model)
+def _contains(outer: dict, inner: dict) -> bool:
+    return (outer["x"] <= inner["x"] and outer["y"] <= inner["y"]
+            and inner["x"] + inner["width"] <= outer["x"] + outer["width"]
+            and inner["y"] + inner["height"] <= outer["y"] + outer["height"])
+
+
+def read_group(frame: np.ndarray, roi: dict, region: Optional[dict] = None,
+               colour: Optional[str] = None,
+               count: Optional[int] = None) -> Tuple[dict, List[np.ndarray]]:
+    """One stripe group as it would be saved, and its stripes' outlines.
+
+    `region` is where the group is searched for on the line, or None for
+    camera 2's detection region. Raises ValueError with an operator-readable
+    reason if the group can't be taught.
+    """
+    if region is not None:
+        if region["width"] < 8 or region["height"] < 8:
+            raise ValueError("The search region is too small.")
+        if not _contains(region, roi):
+            raise ValueError("The stripe box must lie inside the search region, "
+                             "or the stripes would never be found there.")
+    group, boxes = read_stripes(frame, roi, colour, count)
+    group.pop("frame_size", None)
+    group["region"] = ({k: int(region[k]) for k in ("x", "y", "width", "height")}
+                       if region is not None else None)
+    return group, boxes
+
+
+def teach(part_number: str, frame: np.ndarray, groups: List[dict]) -> dict:
+    """Read each stripe group of a good part and save them for the part.
+
+    `groups` lists one dict per group: "roi", the box round its stripes, and
+    optionally "region", "colour" and "count", as for read_group().
+    """
+    if not groups:
+        raise ValueError("Box at least one group of stripes.")
+    taught = []
+    for n, g in enumerate(groups, start=1):
+        try:
+            group, _ = read_group(frame, g["roi"], g.get("region"),
+                                  g.get("colour"), g.get("count"))
+        except ValueError as e:
+            raise (ValueError(f"Group {n}: {e}") if len(groups) > 1 else e)
+        taught.append(group)
+    model = {
+        "part_number": part_number,
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
+        "groups": taught,
+    }
     save_model(model)
     return model
 
@@ -600,8 +683,49 @@ def _judge(masks: dict, lab: np.ndarray, colour: str, model: dict) -> Tuple[int,
     return best[2], False, best[3]
 
 
+def _inspect_group(frame: np.ndarray, group: dict, region: Optional[dict]) -> GroupResult:
+    """Judge one taught group inside `region` of the frame (None: all of it).
+
+    Only the region is searched, so paint elsewhere in the frame, such as
+    another group or another cable, is never counted. Stripes crossing its
+    edge are left out, as at the edge of the frame.
+    """
+    area, x0, y0, box = frame, 0, 0, None
+    if region is not None:
+        area, box = _crop(frame, region, 0.0)
+        x0, y0 = box[0], box[1]
+    colour, expected = group["colour"], group["count"]
+    if area.shape[0] < 8 or area.shape[1] < 8:
+        return GroupResult(ok=False, colour=colour, expected=expected, seen="none",
+                           region=box)
+
+    masks = colour_masks(area)
+    lab = cv2.cvtColor(area, cv2.COLOR_BGR2LAB).astype(np.float32)
+    count, ok, bands = _judge(masks, lab, colour, group)
+
+    seen = f"{colour} x{count}" if count else "none"
+    if not ok and count == expected:
+        # The right number, but not laid out like the taught stripes
+        seen += " of the wrong size or spacing"
+    if not ok:
+        # Name what is there instead, so the operator sees "red x3", not just NG
+        for other in COLOURS:
+            if other == colour:
+                continue
+            n, other_ok, _ = _judge(masks, lab, other, group)
+            if n and (other_ok or not count):
+                seen = f"{other} x{n}"
+                if other_ok:
+                    break
+
+    return GroupResult(ok=ok, colour=colour, expected=expected, count=count, seen=seen,
+                       region=box,
+                       stripe_boxes=[b["box"] + np.array([x0, y0], np.float32)
+                                     for b in bands])
+
+
 def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResult:
-    """Check one part's stripes.
+    """Check one part's stripes: every taught group must be found.
 
     By default grabs a fresh frame from camera 2. Pass `frame` to judge a
     still image instead.
@@ -617,6 +741,9 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
     model = load_model(part_number)
     if model is None:
         return _error(f"No stripe model for '{part_number}'")
+    groups = groups_of(model)
+    if not groups:
+        return _error(f"The stripe model for '{part_number}' has no stripe groups")
 
     if frame is None:
         frame = capture_frame()
@@ -628,48 +755,34 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
         return _error(f"Camera 2 gives {frame.shape[1]}x{frame.shape[0]} frames, "
                       f"but this part was taught at {fw}x{fh}. Re-teach it.")
 
-    # Only the detection region is searched, so paint elsewhere in the frame,
-    # such as another cable or a mat beside the fixture, is never counted.
-    # Stripes crossing its edge are left out, as at the edge of the frame.
-    region = frame
-    x0 = y0 = 0
-    roi = load_roi()
-    if roi is not None:
-        if tuple(roi["frame_size"]) != (frame.shape[1], frame.shape[0]):
+    # Groups without a search region of their own use camera 2's
+    camera_roi = None
+    if any(not g.get("region") for g in groups):
+        camera_roi = load_roi()
+        if camera_roi is not None and \
+                tuple(camera_roi["frame_size"]) != (frame.shape[1], frame.shape[0]):
             return _error(f"Camera 2's detection region was drawn on "
-                          f"{roi['frame_size'][0]}x{roi['frame_size'][1]} frames, but it "
-                          f"gives {frame.shape[1]}x{frame.shape[0]}. Redraw the region.")
-        region, (x0, y0, _, _) = _crop(frame, roi, 0.0)
-        if region.shape[0] < 8 or region.shape[1] < 8:
-            return _error("Camera 2's detection region is too small. Redraw it.")
+                          f"{camera_roi['frame_size'][0]}x{camera_roi['frame_size'][1]} "
+                          f"frames, but it gives {frame.shape[1]}x{frame.shape[0]}. "
+                          f"Redraw the region.")
 
-    masks = colour_masks(region)
-    lab = cv2.cvtColor(region, cv2.COLOR_BGR2LAB).astype(np.float32)
-    colour, expected = model["colour"], model["count"]
-    count, ok, bands = _judge(masks, lab, colour, model)
+    results = [_inspect_group(frame, g, g.get("region") or camera_roi) for g in groups]
+    ok = all(r.ok for r in results)
+    several = len(results) > 1
 
-    seen = f"{colour} x{count}" if count else "none"
-    if not ok and count == expected:
-        # The right number, but not laid out like the taught stripes
-        seen += " of the wrong size or spacing"
-    if not ok:
-        # Name what is there instead, so the operator sees "red x3", not just NG
-        for other in COLOURS:
-            if other == colour:
-                continue
-            n, other_ok, _ = _judge(masks, lab, other, model)
-            if n and (other_ok or not count):
-                seen = f"{other} x{n}"
-                if other_ok:
-                    break
-
-    boxes = [b["box"] + np.array([x0, y0], np.float32) for b in bands]
+    failed = [("Group %d: " % n if several else "")
+              + f"Expected {r.colour} x{r.expected}, found {r.seen}"
+              for n, r in enumerate(results, start=1) if not r.ok]
+    boxes = [b for r in results for b in r.stripe_boxes]
     found_box = (cv2.boundingRect(np.vstack(boxes).astype(np.int32)) if boxes else None)
     elapsed = int((time.time() - start) * 1000)
     return StripeResult(
         ok=ok, judgement="OK" if ok else "NG", part_number=part_number,
-        expected_colour=colour, expected_count=expected, count=count, seen=seen,
+        expected_colour=results[0].colour if not several else describe(model),
+        expected_count=sum(r.expected for r in results),
+        count=sum(r.count for r in results),
+        seen=" + ".join(r.seen for r in results),
         processing_time_ms=elapsed,
-        error=None if ok else f"Expected {colour} x{expected}, found {seen}",
-        stripe_boxes=boxes, found_box=found_box, frame=frame,
+        error=None if ok else "; ".join(failed),
+        stripe_boxes=boxes, found_box=found_box, frame=frame, groups=results,
     )

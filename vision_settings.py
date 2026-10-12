@@ -357,6 +357,8 @@ class RoiView(tk.Canvas):
         # Shapes drawn over the image, as point lists in image coordinates
         self._outlines = []
         self._outline_color = ui.ACCENT_FILL
+        # Labelled boxes that are shown but not edited: (roi, colour, label)
+        self._frames = []
         # Zoom: 1 fits the whole image. `_centre` is the image point shown at
         # the middle of the view, or None for the middle of the image.
         self._zoomable = zoomable
@@ -488,6 +490,12 @@ class RoiView(tk.Canvas):
             self._outline_color = color
         self._redraw()
 
+    def set_frames(self, frames):
+        """Draw these boxes over the image, dashed and labelled, without
+        making them editable. `frames` lists (roi, colour, label)."""
+        self._frames = [(dict(r), c, t) for r, c, t in (frames or []) if r]
+        self._redraw()
+
     def lock_size(self, wh):
         """Pin the box to (w, h), or pass None to allow free drawing again."""
         self._locked_size = tuple(wh) if wh else None
@@ -583,6 +591,18 @@ class RoiView(tk.Canvas):
         for shape in self._outlines:
             pts = [c for x, y in shape for c in self._to_screen(x, y)]
             self.create_polygon(*pts, outline=self._outline_color, fill="", width=2)
+
+        for r, colour, label in self._frames:
+            x0, y0 = self._to_screen(r["x"], r["y"])
+            x1, y1 = self._to_screen(r["x"] + r["width"], r["y"] + r["height"])
+            self.create_rectangle(x0, y0, x1, y1, outline=colour, width=2, dash=(6, 3))
+            if label:
+                tid = self.create_text(x0 + 3, y0 + 3, text=label, anchor="nw",
+                                       fill=ui.readable_on(colour), font=(MONO, 10, "bold"))
+                bx0, by0, bx1, by1 = self.bbox(tid)
+                rid = self.create_rectangle(bx0 - 3, by0 - 1, bx1 + 3, by1 + 1,
+                                            fill=colour, outline="")
+                self.tag_raise(tid, rid)
 
         if self._roi:
             self._draw_marker()
@@ -1063,7 +1083,7 @@ def render(parent):
         for pno in stripe_check.taught_parts():
             model = stripe_check.load_model(pno) or {}
             stripe_tree.insert("", "end", iid=pno, values=(
-                pno, "%s × %s" % (model.get("colour", "?"), model.get("count", "?"))))
+                pno, stripe_check.describe(model)))
         if not stripe_tree.get_children():
             stripe_tree.insert("", "end", iid="!none", tags=("empty",),
                                values=("No parts taught", ""))
@@ -2506,11 +2526,14 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
             return
         if roi:
             roi_lbl.config(text="Only stripes inside the box are counted (%d x %d px at "
-                                "%d, %d)." % (roi["width"], roi["height"], roi["x"], roi["y"]),
+                                "%d, %d). A stripe group taught with its own search "
+                                "region uses that instead."
+                                % (roi["width"], roi["height"], roi["x"], roi["y"]),
                            fg=TXT_DIM)
         else:
-            roi_lbl.config(text="The whole frame is searched. Drag on the preview to "
-                                "limit it to the fixture.", fg=TXT_FAINT)
+            roi_lbl.config(text="The whole frame is searched, except for stripe groups "
+                                "taught with their own search region. Drag on the "
+                                "preview to limit it to the fixture.", fg=TXT_FAINT)
 
     _roi_changed(preview.get_roi())
 
@@ -2685,15 +2708,24 @@ def _open_stripe_teach(parent, part_number=None):
     _dialog_header(
         win,
         "Re-teach stripes — “%s”" % part_number if reteach else "Teach Stripes",
-        "Capture a good part on camera 2, then box its group of stripes.")
+        "Capture a good part on camera 2, then box each group of stripes.")
 
     alive = {"v": True}
     live = {"on": False}
     stream = {"s": None}
-    # The frame being taught from, and what was read from it
-    state = {"frame": None, "label": "", "model": None, "outlines": [], "error": None}
-    # Once the operator picks a colour, a redrawn box keeps it
-    picked = {"colour": None}
+    # The frame being taught from
+    state = {"frame": None, "label": "", "loading": False}
+
+    def _new_group(roi=None, region=None):
+        # "colour" is the one the operator picked, kept when the box is
+        # redrawn; "model" and "outlines" are what was read from the box
+        return {"roi": roi, "region": region, "colour": None, "count": None,
+                "model": None, "outlines": [], "error": None}
+
+    groups = [_new_group()]
+    active = {"i": 0}
+    # What dragging on the picture draws for the active group
+    draw = {"mode": "box"}
     result = {"saved": None}
 
     foot_in = _dialog_footer(win)
@@ -2791,13 +2823,36 @@ def _open_stripe_teach(parent, part_number=None):
                           anchor="w", justify="left", wraplength=270)
     frame_note.pack(fill="x", pady=(4, 0))
 
-    s3, b3 = _step(rail, 3, "Stripe box")
-    _note(s3, "Draw the box round the whole group of stripes, with a little cable "
-              "either side. It only shows which stripes to learn: parts are found "
-              "anywhere in the picture.")
-    roi_lbl = tk.Label(s3, text="Not drawn", bg=BG, fg=WARN,
-                       font=(MONO, 12, "bold"), anchor="w")
+    s3, b3 = _step(rail, 3, "Stripe groups")
+    _note(s3, "Box each group of stripes, with a little cable either side. A group "
+              "may get its own search region: on the line it is looked for only "
+              "there. Without one, camera 2's detection region is searched.")
+    grp_list = tk.Listbox(s3, height=4, font=(MONO, 11), selectmode="browse",
+                          activestyle="none", exportselection=False)
+    grp_list.pack(fill="x", pady=(6, 0))
+    grp_btns = tk.Frame(s3, bg=BG)
+    grp_btns.pack(fill="x", pady=(6, 0))
+    btn_add_grp = _btn(grp_btns, "Add Group", BTN_NEUTRAL, pady=3)
+    btn_add_grp.pack(side="left")
+    btn_del_grp = _btn(grp_btns, "Remove", BTN_NEUTRAL, pady=3)
+    btn_del_grp.pack(side="left", padx=(6, 0))
+
+    mode_row = tk.Frame(s3, bg=BG)
+    mode_row.pack(fill="x", pady=(10, 0))
+    tk.Label(mode_row, text="Draw", bg=BG, fg=TXT_DIM, font=(FONT, 11),
+             width=5, anchor="w").pack(side="left")
+    mode_var = tk.StringVar(value="box")
+    for value, text in (("box", "Stripe box"), ("region", "Search region")):
+        tk.Radiobutton(mode_row, text=text, value=value, variable=mode_var,
+                       command=lambda: _set_mode(mode_var.get()), bg=BG, fg=TXT,
+                       activebackground=BG, selectcolor=PANEL,
+                       font=(FONT, 11)).pack(side="left")
+    roi_lbl = tk.Label(s3, text="", bg=BG, fg=WARN, font=(MONO, 11, "bold"),
+                       anchor="w", justify="left")
     roi_lbl.pack(fill="x", pady=(4, 0))
+    btn_clear_region = _btn(s3, "No Own Region", BTN_NEUTRAL, pady=3,
+                            command=lambda: _clear_region())
+    btn_clear_region.pack(anchor="w", pady=(4, 0))
 
     s4, b4 = _step(rail, 4, "Stripes found")
     found_lbl = tk.Label(s4, text="—", bg=BG, fg=TXT_DIM, font=(FONT, 18, "bold"),
@@ -2824,6 +2879,12 @@ def _open_stripe_teach(parent, part_number=None):
 
     # ── Behaviour ──────────────────────────────────────────────────────────
 
+    BOX_INK = ui.ACCENT_FILL
+    REGION_INK = "#1E78C8"
+
+    def _group():
+        return groups[active["i"]]
+
     def _count():
         try:
             return int(count_var.get())
@@ -2834,8 +2895,8 @@ def _open_stripe_teach(parent, part_number=None):
         return {
             "Part number": bool(ent_pno.get().strip()),
             "Good part": state["frame"] is not None,
-            "Box": view.get_roi() is not None,
-            "Stripes": state["model"] is not None,
+            "Boxes": all(g["roi"] is not None for g in groups),
+            "Stripes": all(g["model"] is not None for g in groups),
         }
 
     def _refresh_gates(*_a):
@@ -2854,28 +2915,65 @@ def _open_stripe_teach(parent, part_number=None):
             else:
                 pno_note.config(text="", fg=TXT_FAINT)
 
+    def _paint_groups():
+        grp_list.delete(0, "end")
+        for n, g in enumerate(groups, start=1):
+            m = g["model"]
+            what = ("%s × %d" % (m["colour"], m["count"]) if m else
+                    "not read" if g["roi"] else "no box")
+            grp_list.insert("end", "%d  %-12s %s" % (n, what,
+                                                     "own region" if g["region"] else ""))
+        grp_list.selection_clear(0, "end")
+        grp_list.selection_set(active["i"])
+        _set_btn_enabled(btn_del_grp, len(groups) > 1)
+
+    def _paint_roi_label():
+        g = _group()
+        box, region = g["roi"], g["region"]
+        roi_lbl.config(
+            text="Box     %s\nRegion  %s" % (
+                "%d × %d px" % (box["width"], box["height"]) if box else "not drawn",
+                "%d × %d px" % (region["width"], region["height"]) if region
+                else "camera 2's"),
+            fg=OK_GREEN if box else WARN)
+        _set_btn_enabled(btn_clear_region, region is not None)
+
     def _show_frame():
-        """The taught frame, with the stripes that were found outlined."""
+        """The taught frame: the active group's box or region to edit, the
+        other boxes and regions dashed, and every group's stripes outlined."""
         if state["frame"] is None:
             return
         view.set_image(state["frame"])
-        view.set_outlines(state["outlines"])
+        g = _group()
+        view.set_accent(BOX_INK if draw["mode"] == "box" else REGION_INK)
+        view.set_roi(g["roi"] if draw["mode"] == "box" else g["region"], notify=False)
+        frames = []
+        for n, other in enumerate(groups, start=1):
+            for key, ink, name in (("roi", BOX_INK, "box"), ("region", REGION_INK, "region")):
+                editing = other is g and key == ("roi" if draw["mode"] == "box" else "region")
+                if other[key] and not editing:
+                    frames.append((other[key], ink, "G%d %s" % (n, name)))
+        view.set_frames(frames)
+        view.set_outlines([o for other in groups for o in other["outlines"]])
 
-    def _analyse():
-        """Read the stripes inside the box, as saving would."""
-        state["model"], state["outlines"], state["error"] = None, [], None
-        roi = view.get_roi()
-        if state["frame"] is not None and roi is not None:
+    def _analyse(g):
+        """Read the stripes inside a group's box, as saving would."""
+        g["model"], g["outlines"], g["error"] = None, [], None
+        if state["frame"] is not None and g["roi"] is not None:
             try:
-                state["model"], state["outlines"] = stripe_check.read_stripes(
-                    state["frame"], roi, colour=picked["colour"])
+                g["model"], g["outlines"] = stripe_check.read_group(
+                    state["frame"], g["roi"], g["region"], colour=g["colour"])
+                g["count"] = g["model"]["count"]
             except ValueError as e:
-                state["error"] = str(e)
+                g["error"] = str(e)
 
-        model = state["model"]
+    def _paint_found():
+        g = _group()
+        model = g["model"]
+        state["loading"] = True
         if model is not None:
             colour_var.set(model["colour"])
-            count_var.set(str(model["count"]))
+            count_var.set(str(g["count"] or model["count"]))
             found_lbl.config(text="%s × %d" % (model["colour"], model["count"]),
                              fg=OK_GREEN)
             found_note.config(
@@ -2883,15 +2981,26 @@ def _open_stripe_teach(parent, part_number=None):
                      "The found stripes are outlined in the picture."
                      % (model["stripe_width"], model["span"]), fg=TXT_FAINT)
         else:
+            colour_var.set(g["colour"] or "")
+            count_var.set("")
             found_lbl.config(text="—", fg=TXT_DIM)
-            found_note.config(text=state["error"] or "", fg=WARN)
+            found_note.config(text=g["error"] or "", fg=WARN)
+        state["loading"] = False
         _check_count()
+
+    def _refresh_all():
+        _paint_groups()
+        _paint_roi_label()
+        _paint_found()
         _show_frame()
         _refresh_gates()
 
     def _check_count(*_a):
-        model = state["model"]
+        g = _group()
+        model = g["model"]
         n = _count()
+        if not state["loading"] and model is not None and n is not None:
+            g["count"] = n
         if model is not None and n is not None and n != model["count"]:
             count_note.config(
                 text="%d were found, but the check will expect %d. Only do this when "
@@ -2901,27 +3010,66 @@ def _open_stripe_teach(parent, part_number=None):
             count_note.config(text="", fg=TXT_FAINT)
 
     def _roi_changed(roi, final=True):
-        if roi:
-            roi_lbl.config(text="%d × %d px" % (roi["width"], roi["height"]), fg=OK_GREEN)
-        else:
-            roi_lbl.config(text="Not drawn", fg=WARN)
+        g = _group()
+        g["roi" if draw["mode"] == "box" else "region"] = roi
+        _paint_roi_label()
         if final:
-            _analyse()
+            _analyse(g)
+            _refresh_all()
+
+    def _set_mode(mode):
+        draw["mode"] = mode
+        mode_var.set(mode)
+        if not live["on"]:
+            view.set_hint("Drag to box the stripes  ·  scroll to zoom, right-drag to move"
+                          if mode == "box" else
+                          "Drag the area this group is searched in on the line")
+        _show_frame()
+
+    def _clear_region():
+        g = _group()
+        g["region"] = None
+        _analyse(g)
+        _refresh_all()
+
+    def _select_group(event=None):
+        sel = grp_list.curselection()
+        if sel and sel[0] != active["i"]:
+            active["i"] = sel[0]
+            _set_mode("box")
+            _refresh_all()
+
+    def _add_group():
+        groups.append(_new_group())
+        active["i"] = len(groups) - 1
+        _set_mode("box")
+        _refresh_all()
+
+    def _remove_group():
+        if len(groups) > 1:
+            groups.pop(active["i"])
+            active["i"] = min(active["i"], len(groups) - 1)
+            _refresh_all()
 
     def _on_colour(event=None):
-        picked["colour"] = colour_var.get() or None
-        _analyse()
+        g = _group()
+        g["colour"] = colour_var.get() or None
+        _analyse(g)
+        _refresh_all()
 
     def _set_live(on):
         live["on"] = on and stream["s"] is not None
         if live["on"]:
             view.set_editable(False)
-            view.set_hint("Live view — capture a frame to draw the box")
-            view.set_outlines([])      # they belong to the captured frame
+            view.set_hint("Live view — capture a frame to draw the boxes")
+            # They belong to the captured frame
+            view.set_outlines([])
+            view.set_frames([])
+            view.set_roi(None, notify=False)
             frame_lbl.config(text="LIVE  ·  camera %d" % cam["index"])
         else:
             view.set_editable(True)
-            view.set_hint("Drag to box the stripes  ·  scroll to zoom, right-drag to move")
+            _set_mode(draw["mode"])
         _paint_buttons()
 
     def _paint_buttons():
@@ -2937,20 +3085,27 @@ def _open_stripe_teach(parent, part_number=None):
             btn_import.pack(side="left")
 
     def _use_frame(img, label):
-        roi = view.get_roi()
+        size_was = None if state["frame"] is None else state["frame"].shape[:2]
         state["frame"], state["label"] = img, label
         live["on"] = False
-        view.set_image(img)
-        # Keep the box across captures of the same size; on a re-teach start
-        # from the box the part was taught with
-        if roi is None and previous and previous.get("frame_size") == [img.shape[1], img.shape[0]]:
-            roi = previous["roi"]
-        view.set_roi(roi, notify=False)
+        # Keep the boxes across captures of the same size; on a re-teach
+        # start from the groups the part was taught with
+        if size_was is not None and size_was != img.shape[:2]:
+            groups[:] = [_new_group()]
+            active["i"] = 0
+        if (all(g["roi"] is None for g in groups) and previous
+                and previous.get("frame_size") == [img.shape[1], img.shape[0]]):
+            groups[:] = [_new_group(g.get("roi"), g.get("region"))
+                         for g in stripe_check.groups_of(previous)] or [_new_group()]
+            active["i"] = 0
+        view.set_image(img, keep_roi=False)
         _set_live(False)
         short = label if len(label) <= 24 else label[:21] + "…"
         frame_lbl.config(text="%s  ·  %d x %d" % (short, img.shape[1], img.shape[0]))
         frame_note.config(text="Captured (%s)" % short, fg=OK_GREEN)
-        _roi_changed(view.get_roi())
+        for g in groups:
+            _analyse(g)
+        _refresh_all()
 
     def _capture():
         s = stream["s"]
@@ -2976,7 +3131,6 @@ def _open_stripe_teach(parent, part_number=None):
 
     def _save():
         pno = ent_pno.get().strip()
-        roi = view.get_roi()
         if not all(_gates().values()):
             return
         if not reteach and pno in existing_parts and not messagebox.askyesno(
@@ -2993,8 +3147,9 @@ def _open_stripe_teach(parent, part_number=None):
                     % (fw, fh, cam["width"], cam["height"]), parent=win):
                 return
         try:
-            stripe_check.teach(pno, state["frame"], roi,
-                               colour=picked["colour"], count=_count())
+            stripe_check.teach(pno, state["frame"], [
+                {"roi": g["roi"], "region": g["region"], "colour": g["colour"],
+                 "count": g["count"]} for g in groups])
         except (ValueError, OSError) as e:
             messagebox.showerror("Save Failed", str(e), parent=win)
             return
@@ -3020,6 +3175,9 @@ def _open_stripe_teach(parent, part_number=None):
     btn_live.configure(command=lambda: _set_live(True))
     btn_save.configure(command=_save)
     btn_cancel.configure(command=_close)
+    btn_add_grp.configure(command=_add_group)
+    btn_del_grp.configure(command=_remove_group)
+    grp_list.bind("<<ListboxSelect>>", _select_group)
     cmb_colour.bind("<<ComboboxSelected>>", _on_colour)
     count_var.trace_add("write", _check_count)
     win.protocol("WM_DELETE_WINDOW", _close)
@@ -3056,7 +3214,7 @@ def _open_stripe_teach(parent, part_number=None):
 
     _paint_buttons()
     _paint_zoom()
-    _refresh_gates()
+    _refresh_all()
     _tick()
 
     parent.wait_window(win)
@@ -3105,6 +3263,9 @@ def _open_stripe_test(parent, part_number):
     m_source = _kv_row(mb, "Source", "Camera 2")
     m_expected = _kv_row(mb, "Expected", "—", mono=True)
     m_found = _kv_row(mb, "Found", "—", mono=True)
+    # Several groups make these long, so they wrap rather than run off the card
+    for value in (m_expected, m_found):
+        value.config(wraplength=140, justify="left")
     m_time = _kv_row(mb, "Time", "—", mono=True)
 
     hint = tk.Label(rail, text="", bg=BG, fg=TXT_DIM, font=(FONT, 10),
@@ -3182,28 +3343,32 @@ def _open_stripe_test(parent, part_number):
         verdict_note.config(text=result.error or "Stripes match", fg=color)
 
         m_source.config(text="Camera 2" if source["kind"] == "camera" else source["label"])
-        m_expected.config(text="%s × %d" % (result.expected_colour, result.expected_count)
-                          if result.expected_colour else "—", fg=TXT)
-        m_found.config(text=result.seen.replace(" x", " × ") if result.seen else "—",
-                       fg=color)
+        model = stripe_check.load_model(part_number)
+        # One group to a line
+        m_expected.config(text=stripe_check.describe(model).replace(" + ", " +\n")
+                          if model else "—", fg=TXT)
+        m_found.config(text=result.seen.replace(" x", " × ").replace(" + ", " +\n")
+                       if result.seen else "—", fg=color)
         m_time.config(text="%d ms" % result.processing_time_ms, fg=TXT)
 
         if result.frame is not None:
             view.set_image(result.frame)
             view.set_outlines(result.stripe_boxes)
             view.set_accent(color)
-            # Box the group that was judged, with a little room round it
             view.set_roi(None, notify=False)
-            if result.found_box:
-                x, y, bw, bh = result.found_box
-                pad = max(4, max(bw, bh) // 4)
-                fh, fw = result.frame.shape[:2]
-                x0, y0 = max(0, x - pad), max(0, y - pad)
-                view.set_roi({"x": x0, "y": y0,
-                              "width": min(fw, x + bw + pad) - x0,
-                              "height": min(fh, y + bh + pad) - y0}, notify=False)
-            view.set_hint("The whole picture was searched; the group judged is boxed")
+            # Each group's search region, in its own verdict's colour
+            several = len(result.groups) > 1
+            view.set_frames([
+                ({"x": g.region[0], "y": g.region[1], "width": g.region[2],
+                  "height": g.region[3]},
+                 OK_GREEN if g.ok else NG_RED,
+                 ("G%d " % n if several else "") + g.seen.replace(" x", " × "))
+                for n, g in enumerate(result.groups, start=1) if g.region])
+            searched = [g for g in result.groups if g.region]
+            view.set_hint("Each group was searched in its own region" if searched else
+                          "The whole picture was searched")
         else:
+            view.set_frames([])
             view.set_image(None)
             view.set_placeholder(result.error or "No frame captured")
 

@@ -1915,29 +1915,30 @@ class EOLTesterGUI:
 
     CAMERA_NG_POPUP_MS = 4000
     CAMERA_NG_IMAGE_WIDTH = 480
-    # The detection region's colour on camera 2's picture, by verdict (BGR)
-    REGION_INK = {"PASS": (0, 160, 0), "NG": (0, 0, 255)}
+    # Camera 2's search regions and stripes, by their group's verdict (BGR)
+    REGION_INK = {True: (0, 160, 0), False: (0, 0, 255)}
 
-    def with_detection_region(self, frame, verdict):
-        """A copy of camera 2's frame with its detection region drawn on it,
-        green for PASS and red otherwise.
+    def with_stripe_regions(self, result):
+        """A copy of camera 2's judged frame with each stripe group drawn on it.
 
-        The frame is returned as it is when no region is drawn, or it was
-        drawn at another resolution.
+        Each group's search region is boxed and its stripes outlined, green
+        if that group was found and red if not, so a picture shows which
+        group failed. A group searched across the whole frame has no box.
         """
-        if frame is None or stripe_check is None:
-            return frame
-        roi = stripe_check.load_roi()
-        if roi is None or tuple(roi["frame_size"]) != (frame.shape[1], frame.shape[0]):
-            return frame
-        img = frame.copy()
-        x, y, w, h = roi["x"], roi["y"], roi["width"], roi["height"]
-        thick = max(2, frame.shape[1] // 320)
-        ink = self.REGION_INK.get(verdict, self.REGION_INK["NG"])
-        cv2.rectangle(img, (x, y), (x + w, y + h), ink, thick)
-        cv2.putText(img, "DETECTION REGION", (x + 4, max(y - 8, 18)),
-                    cv2.FONT_HERSHEY_SIMPLEX, max(0.5, frame.shape[1] / 1280),
-                    ink, thick)
+        img = result.frame.copy()
+        thick = max(2, img.shape[1] // 320)
+        scale = max(0.5, img.shape[1] / 1280)
+        several = len(result.groups) > 1
+        for n, group in enumerate(result.groups, start=1):
+            ink = self.REGION_INK[group.ok]
+            for shape in group.stripe_boxes:
+                cv2.polylines(img, [np.round(shape).astype(np.int32)], True, ink, thick)
+            if group.region:
+                x, y, w, h = group.region
+                cv2.rectangle(img, (x, y), (x + w, y + h), ink, thick)
+                label = f"GROUP {n}" if several else "DETECTION REGION"
+                cv2.putText(img, label, (x + 4, max(y - 8, 18)),
+                            cv2.FONT_HERSHEY_SIMPLEX, scale, ink, thick)
         return img
 
     def show_camera_ng_popup(self, cameras):
@@ -2066,14 +2067,13 @@ class EOLTesterGUI:
                     out["cam2"] = result
                     verdict = self.verdict_of(result)
                     if result.frame is not None:
-                        # The region searched goes on the picture, PASS or NG,
-                        # so the console, the NG pop-up and Work Data all show it
-                        framed = self.with_detection_region(result.frame, verdict)
-                        out["cam2_frame"] = captures.outlined(
-                            framed, result.stripe_boxes, verdict)
+                        # The regions searched go on the picture, PASS or NG,
+                        # so the console, the NG pop-up and Work Data all show
+                        # them, with each group's stripes in its own verdict
+                        framed = self.with_stripe_regions(result)
+                        out["cam2_frame"] = framed
                         out["cam2_image"] = captures.save(
-                            framed, "CAM2", part_number, verdict,
-                            result.seen, result.stripe_boxes)
+                            framed, "CAM2", part_number, verdict, result.seen)
                 elif cam2_on:
                     frame = stripe_check.capture_frame()
                     if frame is not None:
