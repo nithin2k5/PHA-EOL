@@ -1563,9 +1563,10 @@ class EOLTesterGUI:
                         [-5, -3, -1, 1, 3, 5],
                         "LENGTH - GRAPH")
 
-    # Bars on the UPH chart; the hour still running is drawn brighter
-    UPH_BAR = '#00B000'
-    UPH_BAR_NOW = '#7CFC00'
+    # Bars on the UPH chart, all dark green; the hour still running is
+    # picked out with an outline
+    UPH_BAR = '#006400'
+    UPH_BAR_NOW_EDGE = 'white'
 
     def draw_uph_graph(self):
         """Draw today's OK cables per hour for the loaded part, one bar per hour.
@@ -1624,8 +1625,8 @@ class EOLTesterGUI:
                 continue
             bar_top = baseline - (count / top) * graph_height
             canvas.create_rectangle(x + slot * 0.15, bar_top, x + slot * 0.85, baseline,
-                                    fill=self.UPH_BAR_NOW if hour == now else self.UPH_BAR,
-                                    outline="")
+                                    fill=self.UPH_BAR,
+                                    outline=self.UPH_BAR_NOW_EDGE if hour == now else "")
             if slot >= 18:
                 canvas.create_text(x + slot / 2, bar_top - 6, text=str(count),
                                    fill='white', font=label_font)
