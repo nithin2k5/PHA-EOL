@@ -1764,6 +1764,9 @@ class EOLTesterGUI:
             self.cam1Result = "PASS"
         elif cam_ng:
             text, fill = "NG", '#FF0000'
+            # The coils are read over and over; say so once, as it turns NG
+            if self.cam1Result != "NG":
+                self.show_camera_ng_popup(["CAM1"])
             self.cam1Result = "NG"
         else:
             text, fill = "ON", self.SKY
@@ -1902,6 +1905,37 @@ class EOLTesterGUI:
                  "OFF": self.SILVER, "CHECKING": self.SKY}
         self.cam2_view.set_status(result, fills.get(result, self.SKY))
 
+    CAMERA_NG_POPUP_MS = 3000
+
+    def show_camera_ng_popup(self, cameras):
+        """Flash "CAM1 CHECK RESULT: NG" over the console for three seconds.
+
+        It takes no click and holds neither the keyboard nor the test, so
+        the PLC carries on while it shows. A newer one replaces it.
+        """
+        old = getattr(self, 'camera_ng_popup', None)
+        if old is not None and old.winfo_exists():
+            old.destroy()
+        popup = tk.Toplevel(self.root, bg=ui.DANGER)
+        popup.overrideredirect(True)
+        popup.attributes('-topmost', True)
+        self.camera_ng_popup = popup
+
+        names = " AND ".join(cameras)
+        body = tk.Frame(popup, bg='white')
+        body.pack(fill="both", expand=True, padx=4, pady=4)
+        tk.Label(body, text="CAMERA CHECK NG", bg=ui.DANGER, fg='white',
+                 font=(self.FONT, 18, 'bold'), padx=40, pady=10).pack(fill="x")
+        tk.Label(body, text=f"{names} CHECK RESULT: NG", bg='white', fg=ui.DANGER,
+                 font=(self.FONT, 26, 'bold'), padx=40, pady=24).pack()
+
+        popup.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - popup.winfo_reqwidth()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - popup.winfo_reqheight()) // 3
+        popup.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        popup.after(self.CAMERA_NG_POPUP_MS,
+                    lambda: popup.winfo_exists() and popup.destroy())
+
     @staticmethod
     def verdict_of(result):
         """PASS, NG or ERROR for a vision or stripe check result."""
@@ -2033,6 +2067,11 @@ class EOLTesterGUI:
             # Say so at once; the part is failed when the test is saved
             if problems:
                 self.safe_update_message("  |  ".join(problems), "red")
+            ng = [name for name, verdict in (("CAM1", self.cam1Result if check_cam1 else ""),
+                                             ("CAM2", self.cam2Result))
+                  if verdict == "NG"]
+            if ng:
+                self.show_camera_ng_popup(ng)
             self.camera_checks_done = True
             then, self.after_camera_checks_do = self.after_camera_checks_do, None
             if then:
