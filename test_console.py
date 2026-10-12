@@ -1878,7 +1878,10 @@ class EOLTesterGUI:
             vision_settings._open_camera_dialog(
                 self.root, source, title, check_key=self.CAMERA_CHECK_KEYS[number],
                 allow_check_change=lambda window: self.allow_camera_check_change(number,
-                                                                                  window))
+                                                                                  window),
+                # Camera 2 also draws the loaded part's stripe group areas
+                part_number=(getattr(self, 'partNumber', '') or None) if number == 2
+                else None)
         finally:
             self.start_camera_streams()
 

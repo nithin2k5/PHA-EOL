@@ -2395,14 +2395,15 @@ def _prompt_part_number(parent, title, prompt, taken=()):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _open_camera_dialog(parent, source=None, title="Inspection Camera",
-                        check_key=None, allow_check_change=None):
+                        check_key=None, allow_check_change=None, part_number=None):
     """Pick and verify a camera. Returns True if the config changed.
 
     `source` names the camera in camera_cfg.ini; by default it is the one
     template matching uses. `check_key` names the vision_config.json
     setting that turns this camera's check of the parts on or off, and adds
     a box for it; `allow_check_change(window)` is asked when the box is
-    clicked, and returns False to leave it as it was.
+    clicked, and returns False to leave it as it was. For camera 2,
+    `part_number` adds that part's stripe group areas to what can be drawn.
     """
     if not _cv2_ok or not _pil_ok:
         messagebox.showerror("Camera", "OpenCV and Pillow are required.", parent=parent)
@@ -2411,14 +2412,34 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     from vision_engine import camera, load_vision_config, save_vision_config, stripe_check
 
     cam = _load_cam_cfg(source)
-    # Camera 2 searches only the region drawn on its preview
+    # Camera 2 searches only the areas drawn on its preview
     with_roi = source == stripe_check.CAMERA_SOURCE
     saved_roi = stripe_check.load_roi() if with_roi else None
+
+    # What can be drawn on the preview: camera 2's region, used for every
+    # part, then each stripe group's own area of the loaded part. "size" is
+    # the frame size a box belongs to; it is only shown at that size.
+    targets = []
+    part_model = stripe_check.load_model(part_number) if with_roi and part_number else None
+    if with_roi:
+        targets.append({"label": "Camera 2 region (every part)", "short": "camera",
+                        "roi": saved_roi,
+                        "size": tuple(saved_roi["frame_size"]) if saved_roi else None,
+                        "box": None})
+    if part_model:
+        size = tuple(part_model.get("frame_size") or ())
+        for n, g in enumerate(stripe_check.groups_of(part_model), start=1):
+            targets.append({"label": "Group %d  ·  %s × %d" % (n, g["colour"], g["count"]),
+                            "short": "G%d" % n, "roi": g.get("region"), "size": size,
+                            "box": g["roi"]})
+    target = {"i": 0}
+
     # Taller with the camera's on/off box, so Re-scan still fits beneath it
-    win = _dialog(parent, "Camera Configuration", 860 if with_roi else 820,
-                  (680 if check_key else 580) + (130 if with_roi else 0))
+    win = _dialog(parent, "Camera Configuration", 900 if with_roi else 820,
+                  (680 if check_key else 580) + (130 if with_roi else 0)
+                  + 30 * max(0, len(targets) - 1))
     _dialog_header(win, title,
-                   "Drag on the preview to mark where stripes are looked for." if with_roi else
+                   "Choose an area on the right, then drag it on the preview." if with_roi else
                    "The preview is the exact feed inspection will use.")
 
     alive = {"v": True}
@@ -2443,12 +2464,13 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
                       on_change=lambda r, final: _roi_changed(r))
     preview.pack(fill="both", expand=True, padx=1, pady=1)
     preview.set_placeholder("Scanning for cameras…")
-    if saved_roi and tuple(saved_roi["frame_size"]) == (cam["width"], cam["height"]):
-        preview.set_roi(saved_roi, notify=False)
 
-    rail = tk.Frame(body, bg=BG, width=270)
-    rail.grid(row=0, column=1, sticky="ns")
-    rail.pack_propagate(False)
+    # Scrolls, so the areas stay reachable however many groups a part has
+    rail_scroll = ui.scrollable(body, bg=BG)
+    rail_scroll.configure(width=290)
+    rail_scroll.grid(row=0, column=1, sticky="ns")
+    rail_scroll.grid_propagate(False)
+    rail = rail_scroll.body
 
     card = _card(rail, "Device", icon="camera")
     card.pack(fill="x")
@@ -2511,31 +2533,113 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     btn_rescan = _btn(cb_body, "Re-scan", BTN_NEUTRAL, pady=5, icon="refresh")
     btn_rescan.pack(fill="x", pady=(10, 0))
 
+    CAMERA_INK = "#8A8A8A"
+    GROUP_INK = "#1E78C8"
     roi_lbl = None
+    target_btns = []
     if with_roi:
-        roi_card = _card(rail, "Detection region", icon="box")
+        roi_card = _card(rail, "Detection areas", icon="box")
         roi_card.pack(fill="x", pady=(12, 0))
-        roi_lbl = tk.Label(roi_card.body, text="", bg=PANEL, fg=TXT_DIM, font=(FONT, 10),
-                           wraplength=215, justify="left", anchor="w")
-        roi_lbl.pack(fill="x")
-        _btn(roi_card.body, "Whole frame", BTN_NEUTRAL, pady=5,
-             command=lambda: preview.set_roi(None)).pack(fill="x", pady=(8, 0))
+        rb = roi_card.body
+        tk.Label(rb, text="Draw" if part_model else "Drag on the preview to draw it.",
+                 bg=PANEL, fg=TXT_DIM, font=(FONT, 10), anchor="w").pack(fill="x")
+        target_var = tk.IntVar(value=0)
+        if part_model:
+            for i, t in enumerate(targets):
+                if i == 1:
+                    tk.Label(rb, text="Part %s — its group areas" % part_number,
+                             bg=PANEL, fg=TXT, font=(FONT, 10, "bold"),
+                             anchor="w").pack(fill="x", pady=(8, 0))
+                b = tk.Radiobutton(rb, text=t["label"], value=i, variable=target_var,
+                                   command=lambda: _pick_target(target_var.get()),
+                                   bg=PANEL, fg=TXT, activebackground=PANEL,
+                                   selectcolor=BG, anchor="w", font=(FONT, 11))
+                b.pack(fill="x")
+                target_btns.append(b)
+        elif part_number:
+            tk.Label(rb, text="Part %s has no stripe check, so it has no group areas."
+                              % part_number, bg=PANEL, fg=TXT_FAINT, font=(FONT, 10),
+                     wraplength=235, justify="left", anchor="w").pack(fill="x", pady=(4, 0))
+        roi_lbl = tk.Label(rb, text="", bg=PANEL, fg=TXT_DIM, font=(FONT, 10),
+                           wraplength=235, justify="left", anchor="w")
+        roi_lbl.pack(fill="x", pady=(8, 0))
+        btn_clear_area = _btn(rb, "Whole frame", BTN_NEUTRAL, pady=5,
+                              command=lambda: preview.set_roi(None))
+        btn_clear_area.pack(fill="x", pady=(8, 0))
+
+    def _res():
+        return tuple(int(v) for v in res_var.get().split("x"))
+
+    def _usable(t):
+        """A group's area can only be drawn at the size its part was taught at."""
+        return t["short"] == "camera" or t["size"] == _res()
+
+    def _paint_areas():
+        """The area being drawn on the preview, the rest dashed."""
+        if not with_roi:
+            return
+        t = targets[target["i"]]
+        res = _res()
+        preview.set_editable(_usable(t))
+        preview.set_accent(OK_GREEN if t["short"] == "camera" else GROUP_INK)
+        preview.set_roi(t["roi"] if t["size"] == res else None, notify=False)
+        frames = []
+        for i, other in enumerate(targets):
+            if other["size"] != res:
+                continue
+            if other["box"]:
+                frames.append((other["box"], ui.ACCENT_FILL, "%s stripes" % other["short"]))
+            if other["roi"] and i != target["i"]:
+                frames.append((other["roi"], CAMERA_INK if other["short"] == "camera"
+                               else GROUP_INK,
+                               "camera region" if other["short"] == "camera"
+                               else "%s area" % other["short"]))
+        preview.set_frames(frames)
+        for i, b in enumerate(target_btns):
+            b.config(state="normal" if _usable(targets[i]) else "disabled")
+        _describe_area()
+
+    def _describe_area():
+        t = targets[target["i"]]
+        roi = t["roi"] if t["size"] == _res() else None
+        if t["short"] == "camera":
+            btn_clear_area.configure(text="Whole frame")
+            if roi:
+                text = ("Camera 2 region: %d x %d px. Groups that look anywhere in "
+                        "camera 2's area are searched only inside it."
+                        % (roi["width"], roi["height"]))
+            else:
+                text = ("No camera 2 region: groups that look anywhere in camera 2's "
+                        "area search the whole frame. Drag on the preview to limit it.")
+            roi_lbl.config(text=text, fg=TXT_DIM if roi else TXT_FAINT)
+        elif not _usable(t):
+            btn_clear_area.configure(text="Use camera 2's region")
+            roi_lbl.config(text="Part %s was taught at %dx%d. Set that resolution to "
+                                "draw its areas." % ((part_number,) + t["size"]), fg=WARN)
+        else:
+            btn_clear_area.configure(text="Use camera 2's region")
+            if roi:
+                text = ("%s area: %d x %d px. This group is looked for only inside it. "
+                        "It must contain the group's stripes, outlined on the preview."
+                        % (t["label"].split("  ·")[0], roi["width"], roi["height"]))
+            else:
+                text = ("%s looks anywhere in camera 2's region. Drag an area round its "
+                        "stripes to look for it only there." % t["label"].split("  ·")[0])
+            roi_lbl.config(text=text, fg=TXT_DIM if roi else TXT_FAINT)
+        _set_btn_enabled(btn_clear_area, _usable(t) and roi is not None)
+
+    def _pick_target(i):
+        target["i"] = i
+        _paint_areas()
 
     def _roi_changed(roi):
-        if roi_lbl is None:
+        if not with_roi:
             return
-        if roi:
-            roi_lbl.config(text="Only stripes inside the box are counted (%d x %d px at "
-                                "%d, %d). A stripe group taught with its own search "
-                                "region uses that instead."
-                                % (roi["width"], roi["height"], roi["x"], roi["y"]),
-                           fg=TXT_DIM)
-        else:
-            roi_lbl.config(text="The whole frame is searched, except for stripe groups "
-                                "taught with their own search region. Drag on the "
-                                "preview to limit it to the fixture.", fg=TXT_FAINT)
-
-    _roi_changed(preview.get_roi())
+        t = targets[target["i"]]
+        t["roi"], t["size"] = roi, (_res() if t["short"] == "camera" else t["size"])
+        _describe_area()
+        if roi is None:
+            _paint_areas()
 
     status = tk.Label(rail, text="", bg=BG, fg=TXT_DIM, font=(FONT, 11),
                       wraplength=250, justify="left", anchor="w")
@@ -2573,8 +2677,16 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
         stream["s"] = camera.acquire(idx, w, h)
         stream["index"] = idx
 
+    def _on_res_change(*_a):
+        _on_device_change()
+        # Boxes drawn at another size mean nothing at this one
+        if with_roi and not _usable(targets[target["i"]]):
+            target["i"] = 0
+            target_var.set(0)
+        _paint_areas()
+
     cmb_dev.bind("<<ComboboxSelected>>", _on_device_change)
-    cmb_res.bind("<<ComboboxSelected>>", _on_device_change)
+    cmb_res.bind("<<ComboboxSelected>>", _on_res_change)
 
     def _scan():
         _stop_stream()
@@ -2625,8 +2737,13 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
         if s is not None:
             frame = s.latest()
             if frame is not None:
+                shape_was = (None if preview.get_image() is None
+                             else preview.get_image().shape[:2])
                 preview.set_image(frame)
                 preview.set_hint("%d x %d" % (frame.shape[1], frame.shape[0]))
+                # A new frame size drops the box being drawn; put it back
+                if shape_was != frame.shape[:2]:
+                    _paint_areas()
             elif not s.is_alive():
                 preview.set_image(None)
                 preview.set_placeholder("Camera %d is not delivering frames."
@@ -2649,11 +2766,22 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
                     "No frames have arrived from camera %d yet.\n\nSave anyway?" % idx,
                     parent=win):
                 return
+        groups_were = ([g.get("region") for g in stripe_check.groups_of(part_model)]
+                       if part_model else [])
+        group_areas = [t["roi"] for t in targets[1:]]
+        try:
+            if group_areas != groups_were:
+                stripe_check.set_group_regions(part_number, group_areas)
+        except ValueError as e:
+            messagebox.showerror("Group Area", str(e), parent=win)
+            return
         try:
             _save_cam_cfg(idx, w, h, idx >= 0, source)
             if with_roi:
-                # The box is in the preview's pixels, which are this resolution's
-                stripe_check.save_roi(preview.get_roi(), (w, h))
+                # The region is in the preview's pixels, which are this resolution's
+                camera_region = targets[0]
+                stripe_check.save_roi(camera_region["roi"]
+                                      if camera_region["size"] == (w, h) else None, (w, h))
             if check_key and check_now != check_was:
                 v_cfg = load_vision_config()
                 v_cfg[check_key] = check_now
@@ -2679,6 +2807,7 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     win.protocol("WM_DELETE_WINDOW", _close)
     win.bind("<Escape>", lambda e: _close())
 
+    _paint_areas()
     _scan()
     _tick()
     parent.wait_window(win)

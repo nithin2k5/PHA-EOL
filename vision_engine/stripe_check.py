@@ -683,6 +683,43 @@ def _judge(masks: dict, lab: np.ndarray, colour: str, model: dict) -> Tuple[int,
     return best[2], False, best[3]
 
 
+def set_group_regions(part_number: str, regions: List[Optional[dict]]) -> dict:
+    """Give each of a taught part's stripe groups a new search region.
+
+    `regions` has one entry per group, in order; None searches camera 2's
+    detection region. Nothing else about the groups changes, so the part is
+    not re-taught. Raises ValueError if a region would leave out its group's
+    stripes.
+    """
+    model = load_model(part_number)
+    if model is None:
+        raise ValueError(f"'{part_number}' has no stripe check.")
+    groups = groups_of(model)
+    if len(regions) != len(groups):
+        raise ValueError(f"'{part_number}' has {len(groups)} stripe groups, "
+                         f"not {len(regions)}.")
+    for n, (group, region) in enumerate(zip(groups, regions), start=1):
+        if region is not None:
+            if region["width"] < 8 or region["height"] < 8:
+                raise ValueError(f"Group {n}: the area is too small.")
+            if not _contains(region, group["roi"]):
+                raise ValueError(f"Group {n}: the area must contain the stripes "
+                                 f"taught for it, or they would never be found.")
+        group["region"] = ({k: int(region[k]) for k in ("x", "y", "width", "height")}
+                           if region is not None else None)
+    if "groups" not in model:
+        # Taught before parts could have several groups: store it the new way
+        frame_size = model.pop("frame_size", None)
+        model = {"part_number": model.get("part_number", part_number),
+                 "created": model.get("created", ""), "frame_size": frame_size,
+                 "groups": [{k: v for k, v in g.items()
+                             if k not in ("part_number", "created")} for g in groups]}
+    else:
+        model["groups"] = groups
+    save_model(model)
+    return model
+
+
 def _inspect_group(frame: np.ndarray, group: dict, region: Optional[dict]) -> GroupResult:
     """Judge one taught group inside `region` of the frame (None: all of it).
 
