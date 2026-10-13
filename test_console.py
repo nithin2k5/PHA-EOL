@@ -824,7 +824,7 @@ class EOLTesterGUI:
             messagebox.showerror("Start Test", "The PLC is not connected.")
             return
         # Before the PLC is told anything, so an aborted test never starts
-        if not self.date_ready_for_test() or not self.cameras_ready_for_test():
+        if not self.cameras_ready_for_test():
             return
 
         self.trace(f"START pressed for part {self.current_part_number}")
@@ -1835,47 +1835,6 @@ class EOLTesterGUI:
             f"The test was not started: {names} {verb} not configured.\n\n"
             "Click the camera's picture on this screen to choose its device, then "
             "start the test again. To test without a camera, untick its CAM box.",
-            parent=self.root)
-        return False
-
-    def date_ready_for_test(self):
-        """True if this PC's date is the database server's date; otherwise abort the test.
-
-        The lot number and traceability code are made from the PC's date, so
-        a test on a PC whose clock is wrong would be saved and labelled under
-        the wrong day. Call this before the PLC is told to start.
-        """
-        pc_date = datetime.today().date()
-        try:
-            conn = db.connect(connection_timeout=5)
-            try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT CURDATE()")
-                server_date = cursor.fetchone()[0]
-                cursor.close()
-            finally:
-                conn.close()
-        except Exception as e:
-            print(f"Error reading the database server's date: {e}")
-            self.safe_update_message("Test aborted - the date could not be checked.", "red")
-            messagebox.showerror(
-                "Test Aborted",
-                "The test was not started: the date could not be checked against "
-                f"the database server.\n\n{e}",
-                parent=self.root)
-            return False
-        if server_date == pc_date:
-            return True
-
-        self.log_operator_action(
-            "TEST_ABORTED", f"PC date {pc_date:%d-%m-%Y} is not today ({server_date:%d-%m-%Y})")
-        self.safe_update_message(
-            f"Test aborted - the PC date is not today's date ({server_date:%d-%m-%Y}).", "red")
-        messagebox.showerror(
-            "Test Aborted",
-            f"The test was not started: this PC's date is {pc_date:%d-%m-%Y}, "
-            f"but today is {server_date:%d-%m-%Y}.\n\n"
-            "Correct the PC's date and time, then start the test again.",
             parent=self.root)
         return False
 
@@ -3570,11 +3529,10 @@ class EOLTesterGUI:
                         with open(self.barcodePrintFileNamePath, 'r') as f:
                             self.prnFileContent = f.read()
                 
-                # The writes below start the test, so the date and cameras are
-                # checked first: with the PC's date not today's, or a camera's
-                # box ticked and that camera not set up, the part stays on
-                # show but the test is aborted
-                if not self.date_ready_for_test() or not self.cameras_ready_for_test():
+                # The writes below start the test, so the cameras are checked
+                # first: with a camera's box ticked and that camera not set
+                # up, the part stays on show but the test is aborted
+                if not self.cameras_ready_for_test():
                     # Not loaded for testing: START asks for the ALC code
                     # again rather than run the previous part's program
                     self.current_part_number = None
