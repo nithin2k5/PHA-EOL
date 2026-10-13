@@ -22,3 +22,6 @@ vision_config.json
 
 # Camera vision model files - kept out of git
 vision_models/
+
+# install.sh build environment and output
+/build/
