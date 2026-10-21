@@ -59,6 +59,10 @@ COLOURS = ("white", "red", "yellow", "green", "blue", "purple")
 # a different part. Hand-painted bands vary, so this is loose.
 SIZE_TOLERANCE = 0.4
 
+# A box at least this many times longer than it is wide is drawn tight round
+# the cable, and stripes may touch its long sides (see _bands)
+CABLE_BOX_RATIO = 3
+
 # Bands belong to one group while each is within this many stripe pitches
 # of another
 GROUP_LINK = 1.6
@@ -151,13 +155,24 @@ def _bands(mask: np.ndarray, min_area: int = 12, max_extent: float = 0.0) -> lis
     With `max_extent`, patches whose bounding box is longer than that are
     skipped before they are measured, which keeps a whole frame of
     background colour cheap to look through.
+
+    A mask far longer than it is wide is a box drawn tight round the cable,
+    whose long sides are the cable's edges. Stripes run right across the
+    cable, so there patches may touch the long sides; only those touching
+    the ends, where the box cuts the cable off, are left out.
     """
     mh, mw = mask.shape[:2]
+    along_x = mw >= CABLE_BOX_RATIO * mh
+    along_y = mh >= CABLE_BOX_RATIO * mw
     n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
     out = []
     for i in range(1, n):
         x, y, w, h, area = stats[i]
-        if area < min_area or x == 0 or y == 0 or x + w >= mw or y + h >= mh:
+        if area < min_area:
+            continue
+        if not along_y and (x == 0 or x + w >= mw):
+            continue
+        if not along_x and (y == 0 or y + h >= mh):
             continue
         if max_extent and max(w, h) > max_extent:
             continue
