@@ -12,6 +12,9 @@ Methodology:
   - Inspect: capture a live frame and search for the Template across it with
     cv2.matchTemplate.
   - Result: if the best match score >= threshold the part is present and correct.
+
+Frames are enhanced (see enhance.py) before templates are cut from them, and
+live frames before they are searched, for parts taught that way.
 """
 import configparser
 import json
@@ -24,6 +27,7 @@ import cv2
 import numpy as np
 
 from . import camera
+from .enhance import MODEL_KEY as ENHANCED, enhance, for_model
 
 DEFAULT_MATCH_THRESHOLD = 0.75
 
@@ -214,6 +218,8 @@ class VisionController:
             if frame is None:
                 return _error("Camera not available")
 
+        # The frame as judged, which the result carries for display
+        frame = for_model(frame, model)
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         best_score = -1.0
@@ -286,6 +292,9 @@ class VisionController:
             x, y, w, h = r["x"], r["y"], r["width"], r["height"]
             if w < 10 or h < 10:
                 raise ValueError(f"Region on reference image {n} is too small.")
+            # Whole image, then crop: the enhancement depends on what is round
+            # the part, as it will in the live frame
+            img = enhance(img)
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
             if y + h > gray.shape[0] or x + w > gray.shape[1]:
                 raise ValueError(
@@ -300,6 +309,7 @@ class VisionController:
             "roi": rois[0],          # older readers expect a single region
             "match_threshold": match_threshold,
             "num_references": len(templates),
+            ENHANCED: True,
         }
 
         os.makedirs(_MODELS_DIR, exist_ok=True)

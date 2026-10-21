@@ -26,6 +26,9 @@ Methodology:
     direction, so stripes that touch still count separately.
   - Result: OK if, for every taught group, some group of bands in its
     region matches its count and length.
+
+Frames are enhanced (see enhance.py) before stripes are read from them, both
+when teaching and, for parts taught that way, when inspecting.
 """
 import json
 import math
@@ -39,6 +42,7 @@ import cv2
 import numpy as np
 
 from . import camera
+from .enhance import MODEL_KEY as ENHANCED, enhance, for_model
 from .vision_controller import load_camera_config, load_vision_config, save_vision_config
 
 CAMERA_SOURCE = "cam2"
@@ -434,10 +438,11 @@ def read_stripes(frame: np.ndarray, roi: dict, colour: Optional[str] = None,
     of each stripe in frame coordinates, so the operator can see what was
     found before saving. `colour` and `count` override what was read from the
     image. Raises ValueError with an operator-readable reason when no stripes
-    are found.
+    are found. `frame` is as captured; it is enhanced here.
     """
     if roi["width"] < 8 or roi["height"] < 8:
         raise ValueError("The box is too small. Draw it round the whole stripe group.")
+    frame = enhance(frame)
     patch, box = _crop(frame, roi, 0.0)
     x0, y0 = box[0], box[1]
     masks = masks_in(frame, box)
@@ -539,6 +544,7 @@ def teach(part_number: str, frame: np.ndarray, groups: List[dict]) -> dict:
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
         "groups": taught,
+        ENHANCED: True,
     }
     save_model(model)
     return model
@@ -830,6 +836,8 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
                           f"frames, but it gives {frame.shape[1]}x{frame.shape[0]}. "
                           f"Redraw the region.")
 
+    # The frame as judged, which the result carries for display
+    frame = for_model(frame, model)
     results = [_inspect_group(frame, g, g.get("region") or camera_roi) for g in groups]
     ok = all(r.ok for r in results)
     several = len(results) > 1

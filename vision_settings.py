@@ -24,6 +24,7 @@ import ui
 try:
     import cv2
     import numpy as np
+    from vision_engine.enhance import enhance
     _cv2_ok = True
 except ImportError:
     _cv2_ok = False
@@ -322,6 +323,9 @@ class RoiView(tk.Canvas):
     With a locked size (see lock_size) the handles disappear and a click drops a
     box of that exact size where you point, so a box drawn on one image can be
     repositioned onto the part in the next without changing what it crops.
+
+    With `enhanced`, the picture is shown with its light evened out, as the
+    vision checks see it when teaching; get_image() still returns it as given.
     """
 
     HANDLE = 4          # handle half-size, screen px
@@ -340,12 +344,14 @@ class RoiView(tk.Canvas):
     ZOOM_STEP = 1.25
 
     def __init__(self, parent, on_change=None, editable=True, zoomable=False,
-                 on_zoom=None, **kw):
+                 on_zoom=None, enhanced=False, **kw):
         super().__init__(parent, bg=VIEW_BG, highlightthickness=0,
                          bd=0, cursor="crosshair", **kw)
         self._on_change = on_change
         self._editable = editable
         self._image = None          # BGR ndarray
+        self._shown = None          # what is drawn: _image, enhanced or not
+        self._enhanced = enhanced
         self._roi = None            # {"x","y","width","height"} in image coords
         self._view = None           # (scale, ox, oy, dw, dh)
         self._photo = None
@@ -389,6 +395,7 @@ class RoiView(tk.Canvas):
     def set_image(self, img, keep_roi=True):
         prev_shape = None if self._image is None else self._image.shape[:2]
         self._image = img
+        self._shown = enhance(img) if img is not None and self._enhanced else img
         if img is not None:
             if not keep_roi:
                 self._roi = None
@@ -582,7 +589,7 @@ class RoiView(tk.Canvas):
 
         s, ox, oy, dw, dh = self._view
         if self._zoom <= 1.0:
-            self._photo, _ = _to_photo(self._image, dw, dh)
+            self._photo, _ = _to_photo(self._shown, dw, dh)
             self.create_image(ox, oy, image=self._photo, anchor="nw")
         else:
             self._draw_visible(s, ox, oy, cw, ch)
@@ -633,7 +640,7 @@ class RoiView(tk.Canvas):
         y1 = min(ih, int((ch - oy) / s) + 2)
         if x1 <= x0 or y1 <= y0:
             return
-        patch = self._image[y0:y1, x0:x1]
+        patch = self._shown[y0:y1, x0:x1]
         rgb = cv2.cvtColor(patch, cv2.COLOR_GRAY2RGB if patch.ndim == 2 else cv2.COLOR_BGR2RGB)
         w, h = max(1, round((x1 - x0) * s)), max(1, round((y1 - y0) * s))
         # Close in, show the real pixels rather than a blur, so a stripe's
@@ -1485,7 +1492,7 @@ def _open_teach_wizard(parent, cam, part_number=None):
         "Capture the good part a few times, then box it on every reference.")
 
     alive = {"v": True}
-    refs = []                       # [{"img", "label", "thumb", "roi"}]
+    refs = []                       # [{"img", "shown", "label", "thumb", "roi"}]
     sel = {"i": None}
     live = {"on": False}
     stream = {"s": None}
@@ -1522,7 +1529,8 @@ def _open_teach_wizard(parent, cam, part_number=None):
 
     view_wrap = tk.Frame(left, bg=LINE)
     view_wrap.grid(row=0, column=0, sticky="nsew")
-    view = RoiView(view_wrap, on_change=lambda r, final: _roi_changed(r, final))
+    view = RoiView(view_wrap, on_change=lambda r, final: _roi_changed(r, final),
+                   enhanced=True)
     view.pack(fill="both", expand=True, padx=1, pady=1)
 
     view_bar = tk.Frame(left, bg=BG)
@@ -1772,7 +1780,7 @@ def _open_teach_wizard(parent, cam, part_number=None):
         r = ref["roi"]
         if not r:
             return None
-        return ref["img"][r["y"]:r["y"] + r["height"], r["x"]:r["x"] + r["width"]]
+        return ref["shown"][r["y"]:r["y"] + r["height"], r["x"]:r["x"] + r["width"]]
 
     def _paint_crops():
         for w in crops.winfo_children():
@@ -1808,8 +1816,11 @@ def _open_teach_wizard(parent, cam, part_number=None):
             ref_size["wh"] = (w, h)
         elif (w, h) != ref_size["wh"]:
             return False
-        thumb, _ = _to_photo(img, 66, 50)
-        refs.append({"img": img, "label": label, "thumb": thumb, "roi": None})
+        # Shown as the template will be cut from it
+        shown = enhance(img)
+        thumb, _ = _to_photo(shown, 66, 50)
+        refs.append({"img": img, "shown": shown, "label": label, "thumb": thumb,
+                     "roi": None})
         return True
 
     def _remove_ref(i):
@@ -2904,7 +2915,7 @@ def _open_stripe_teach(parent, part_number=None):
     # Zoomable: stripes are often only a few pixels wide in the frame, too
     # small to box accurately at the size that fits the whole picture
     view = RoiView(view_wrap, on_change=lambda r, final: _roi_changed(r, final),
-                   zoomable=True, on_zoom=lambda z: _paint_zoom())
+                   zoomable=True, on_zoom=lambda z: _paint_zoom(), enhanced=True)
     # What to do next, in words, right above where it is done
     banner = tk.Label(view_wrap, text="", bg=ui.SUBTLE, fg=TXT, anchor="w",
                       font=(FONT, 13, "bold"), padx=12, pady=8)
