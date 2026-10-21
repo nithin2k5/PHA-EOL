@@ -65,6 +65,9 @@ SIZE_TOLERANCE = 0.4
 # stripe, counts.
 WHITE_REACH = 31
 
+# colour_masks() key holding each pixel's brightness, beside the colours
+LEVEL = "level"
+
 # Bands belong to one group while each is within this many stripe pitches
 # of another
 GROUP_LINK = 1.6
@@ -114,7 +117,10 @@ class StripeResult:
 # ── Colour masks ────────────────────────────────────────────────────────────
 
 def colour_masks(bgr: np.ndarray) -> dict:
-    """One mask per stripe colour. OpenCV hue runs 0-180."""
+    """One mask per stripe colour, and each pixel's brightness under LEVEL.
+
+    OpenCV hue runs 0-180.
+    """
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     # Shine on glossy paint keeps its hue but loses saturation, so very bright
@@ -139,8 +145,10 @@ def colour_masks(bgr: np.ndarray) -> dict:
         "purple": pale & (h >= 129) & (h <= 165),
     }
     kernel = np.ones((3, 3), np.uint8)
-    return {c: cv2.morphologyEx(m.astype(np.uint8) * 255, cv2.MORPH_OPEN, kernel)
-            for c, m in masks.items()}
+    masks = {c: cv2.morphologyEx(m.astype(np.uint8) * 255, cv2.MORPH_OPEN, kernel)
+             for c, m in masks.items()}
+    masks[LEVEL] = v
+    return masks
 
 
 def masks_in(frame: np.ndarray, box: Tuple[int, int, int, int]) -> dict:
@@ -169,7 +177,8 @@ def _paint_mask(masks: dict) -> np.ndarray:
 
 # ── Bands ───────────────────────────────────────────────────────────────────
 
-def _bands(mask: np.ndarray, min_area: int = 12, max_extent: float = 0.0) -> list:
+def _bands(mask: np.ndarray, min_area: int = 12, max_extent: float = 0.0,
+           level: Optional[np.ndarray] = None, longest: float = 0.0) -> list:
     """Solid colour patches: their pixels, centre and size across/along.
 
     Patches touching the edge of the mask are left out. Stripes sit inside
@@ -178,30 +187,157 @@ def _bands(mask: np.ndarray, min_area: int = 12, max_extent: float = 0.0) -> lis
     With `max_extent`, patches whose bounding box is longer than that are
     skipped before they are measured, which keeps a whole frame of
     background colour cheap to look through.
+
+    With `level`, the brightness of each pixel, a patch left out is tried
+    again split into pieces (see _split); `longest` is the most a stripe can
+    measure, when known.
     """
     mh, mw = mask.shape[:2]
     n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
     out = []
     for i in range(1, n):
         x, y, w, h, area = stats[i]
-        if area < min_area or x == 0 or y == 0 or x + w >= mw or y + h >= mh:
+        if area < min_area:
             continue
-        if max_extent and max(w, h) > max_extent:
-            continue
-        ys, xs = np.nonzero(labels[y:y + h, x:x + w] == i)
-        pts = np.column_stack([xs + x, ys + y]).astype(np.float32)
-        (cx, cy), (w, h), ang = cv2.minAreaRect(pts)
-        # A stripe is a filled band, not a hairline or a scattered smear
-        if area / max(1.0, w * h) < 0.45:
-            continue
-        theta = math.radians(ang) if w >= h else math.radians(ang + 90)
-        out.append({
-            "pts": pts, "area": int(area), "centre": np.array([cx, cy]),
-            "long": max(w, h), "short": max(1.0, min(w, h)),
-            "dir": np.array([math.cos(theta), math.sin(theta)]),
-            "box": cv2.boxPoints(((cx, cy), (w, h), ang)),
-        })
+        patch = labels[y:y + h, x:x + w] == i
+        band = _band(patch, x, y, (mw, mh), max_extent)
+        if band is not None:
+            out.append(band)
+        elif level is not None:
+            out.extend(_split(patch, level[y:y + h, x:x + w], x, y, (mw, mh),
+                              min_area, max_extent, longest))
     return out
+
+
+def _band(patch: np.ndarray, x: int, y: int, size: Tuple[int, int],
+          max_extent: float) -> Optional[dict]:
+    """One patch measured as a band, or None if it isn't one.
+
+    `patch` marks its pixels inside its bounding box, which sits at (x, y) in
+    a mask of `size` (width, height).
+    """
+    h, w = patch.shape
+    if x == 0 or y == 0 or x + w >= size[0] or y + h >= size[1]:
+        return None
+    if max_extent and max(w, h) > max_extent:
+        return None
+    ys, xs = np.nonzero(patch)
+    area = len(xs)
+    pts = np.column_stack([xs + x, ys + y]).astype(np.float32)
+    (cx, cy), (w, h), ang = cv2.minAreaRect(pts)
+    # A stripe is a filled band, not a hairline or a scattered smear
+    if area / max(1.0, w * h) < 0.45:
+        return None
+    theta = math.radians(ang) if w >= h else math.radians(ang + 90)
+    return {
+        "pts": pts, "area": int(area), "centre": np.array([cx, cy]),
+        "long": max(w, h), "short": max(1.0, min(w, h)),
+        "dir": np.array([math.cos(theta), math.sin(theta)]),
+        "box": cv2.boxPoints(((cx, cy), (w, h), ang)),
+    }
+
+
+def _split(patch: np.ndarray, level: np.ndarray, x: int, y: int,
+           size: Tuple[int, int], min_area: int, max_extent: float,
+           longest: float = 0.0) -> list:
+    """Bands inside a patch that is not one, such as stripes run into
+    something pale lying beside or across the cable.
+
+    Stripes are short; what they ran into is usually long, so whatever is
+    long is taken away, and a little round it for the blur where the two
+    touched. Something pale lying along the cable is long in the patch's
+    main direction, which stripes cross. With `longest` known, anything in
+    any direction longer than a stripe could be goes too, such as a pale
+    line crossing the cable. Failing that, the patch is split by brightness
+    (see _split_by_level).
+    """
+    # An eighth of the patch's length: far longer than a stripe is wide,
+    # and short enough to fit along a pale strip that bends a little
+    long = _long_parts(patch, max(patch.shape) / 8, [_main_direction(patch)])
+    if longest:
+        long |= _long_parts(patch, longest, np.arange(12) * math.pi / 12, reduce=True)
+    long = cv2.dilate(long, np.ones((3, 3), np.uint8), iterations=2)
+    bands = _bands_in(patch & (long == 0), x, y, size, min_area, max_extent)
+    return bands or _split_by_level(patch, level, x, y, size, min_area, max_extent)
+
+
+def _main_direction(patch: np.ndarray) -> float:
+    """The angle, in radians, a patch is longest along."""
+    ys, xs = np.nonzero(patch)
+    (_, _), (w, h), ang = cv2.minAreaRect(np.column_stack([xs, ys]).astype(np.float32))
+    return math.radians(ang) if w >= h else math.radians(ang + 90)
+
+
+def _long_parts(patch: np.ndarray, reach: float, angles, reduce: bool = False) -> np.ndarray:
+    """The parts of a patch more than twice `reach` long in one of `angles`.
+
+    With `reduce`, the search runs on a smaller copy, so many directions over
+    a large patch stay quick.
+    """
+    mask = patch.astype(np.uint8) * 255
+    if reach < 4:
+        return np.zeros_like(mask)
+    scale = min(1.0, 24.0 / reach) if reduce else 1.0
+    small = mask
+    if scale < 1.0:
+        small = cv2.resize(mask, (max(1, round(mask.shape[1] * scale)),
+                                  max(1, round(mask.shape[0] * scale))),
+                           interpolation=cv2.INTER_AREA)
+        small = np.where(small >= 128, 255, 0).astype(np.uint8)
+    r = int(round(reach * scale))
+    long = np.zeros_like(small)
+    for angle in angles:
+        line = np.zeros((2 * r + 1, 2 * r + 1), np.uint8)
+        dx, dy = r * math.cos(angle), r * math.sin(angle)
+        cv2.line(line, (int(round(r - dx)), int(round(r - dy))),
+                 (int(round(r + dx)), int(round(r + dy))), 1, 1)
+        # Outside the patch is empty: by default OpenCV treats it as full,
+        # and a line poking out past a stripe's end would seem to fit
+        long |= cv2.morphologyEx(small, cv2.MORPH_OPEN, line,
+                                 borderType=cv2.BORDER_CONSTANT, borderValue=0)
+    if scale < 1.0:
+        long = cv2.resize(long, (mask.shape[1], mask.shape[0]),
+                          interpolation=cv2.INTER_LINEAR)
+        long = np.where(long >= 128, 255, 0).astype(np.uint8)
+    return long
+
+
+def _split_by_level(patch: np.ndarray, level: np.ndarray, x: int, y: int,
+                    size: Tuple[int, int], min_area: int, max_extent: float) -> list:
+    """Bands inside a patch, kept apart by brightness.
+
+    Where two things touch, the pixels between them are a blend of both, and
+    neither as bright as the brighter one nor kept apart from the dimmer one.
+    Keeping only the patch's pixels above one of its levels drops that blend,
+    and the dimmer thing too if it is the background. The level whose bands
+    cover the most wins: a high level breaks noise into many small specks.
+    Levels are spread evenly over the patch's range, not by how many pixels
+    it has at each, as the pale thing can be most of the patch.
+    """
+    values = level[patch]
+    low, high = int(values.min()), int(values.max())
+    best, best_area = [], 0
+    for t in range(low + 1, high, max(2, (high - low) // 24)):
+        bands = _bands_in(patch & (level >= t), x, y, size, min_area, max_extent)
+        area = sum(b["area"] for b in bands)
+        if area > best_area:
+            best, best_area = bands, area
+    return best
+
+
+def _bands_in(part: np.ndarray, x: int, y: int, size: Tuple[int, int],
+              min_area: int, max_extent: float) -> list:
+    """The bands among the pieces of `part`, a box at (x, y) in the mask."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(part.astype(np.uint8), 8)
+    bands = []
+    for i in range(1, n):
+        px, py, pw, ph, area = stats[i]
+        if area < min_area:
+            continue
+        band = _band(labels[py:py + ph, px:px + pw] == i, x + px, y + py, size, max_extent)
+        if band is not None:
+            bands.append(band)
+    return bands
 
 
 def _cable_axis(bands: list) -> np.ndarray:
@@ -402,11 +538,18 @@ def _crop(frame: np.ndarray, roi: dict, margin: float) -> Tuple[np.ndarray, Tupl
     return frame[y0:y1, x0:x1], (x0, y0, x1 - x0, y1 - y0)
 
 
-def _colour_bands(masks: dict, colour: str, max_extent: float = 0.0) -> list:
-    """Bands of one colour. White ones lying on coloured paint are its shine."""
+def _colour_bands(masks: dict, colour: str, max_extent: float = 0.0,
+                  longest: float = 0.0) -> list:
+    """Bands of one colour. White ones lying on coloured paint are its shine.
+
+    White stripes may run into something pale beside or across the cable, so
+    white patches that aren't bands are split to find them; `longest` is the
+    most a stripe can measure, when known.
+    """
     mask = masks[colour]
     if colour == "white":
         mask = cv2.bitwise_and(mask, cv2.bitwise_not(_paint_mask(masks)))
+        return _bands(mask, max_extent=max_extent, level=masks[LEVEL], longest=longest)
     return _bands(mask, max_extent=max_extent)
 
 
@@ -693,8 +836,9 @@ def _judge(masks: dict, lab: np.ndarray, colour: str, model: dict) -> Tuple[int,
     # A band may be a whole stripe or a piece of one split by shine, so only
     # bands too big for a stripe, or mere specks, are dropped here; each
     # stripe's full length is checked once the group is put together
-    bands = [b for b in _colour_bands(masks, colour, max_extent=extent)
-             if length * (1 - tol) * 0.4 <= b["long"] <= length / (1 - tol)]
+    longest = length / (1 - tol)
+    bands = [b for b in _colour_bands(masks, colour, max_extent=extent, longest=longest)
+             if length * (1 - tol) * 0.4 <= b["long"] <= longest]
     if not bands:
         return 0, False, []
 
