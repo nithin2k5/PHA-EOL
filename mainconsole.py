@@ -129,8 +129,6 @@ class NavButton(ctk.CTkButton):
 class MainConsole(tk.Tk):
     # Records older than this are written out to the archive folders.
     ARCHIVE_AFTER_DAYS = 120
-    # Warn when the last test on this machine is older than this.
-    STALE_TEST_WARNING_DAYS = 2
     # Share of the window width given to the side navigation.
     NAV_SHARE = 0.05
     # The tab on the navigation's edge that puts it away and brings it back.
@@ -540,14 +538,6 @@ class MainConsole(tk.Tk):
             )
             return False
 
-        if days > self.STALE_TEST_WARNING_DAYS:
-            messagebox.showwarning(
-                "Old Test Data",
-                f"The Last Test Date is more than {self.STALE_TEST_WARNING_DAYS} "
-                "days older. Please consult Line Supervisor and Line Quality "
-                "Incharge before you proceed with the Testing."
-            )
-
         return True
 
     def archive_folders(self):
@@ -861,9 +851,7 @@ class MainConsole(tk.Tk):
     def user_manual_click(self):
         self.open_page(
             "Help",
-            lambda page: HelpConsole(page,
-                                     archive_days=self.ARCHIVE_AFTER_DAYS,
-                                     stale_days=self.STALE_TEST_WARNING_DAYS),
+            lambda page: HelpConsole(page, archive_days=self.ARCHIVE_AFTER_DAYS),
             entry=self.btn_help)
 
     def support_click(self):

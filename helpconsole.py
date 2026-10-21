@@ -105,11 +105,10 @@ class HelpConsole(Page):
     TITLE = 'Help'
     ICON = 'question'
 
-    def __init__(self, root, archive_days=None, stale_days=None):
+    def __init__(self, root, archive_days=None):
         # Taken from the main console rather than repeated here, so the page
         # cannot quietly drift away from what the application actually does.
         self.archive_days = archive_days
-        self.stale_days = stale_days
         super().__init__(root)
 
     def build(self, body):
@@ -161,19 +160,10 @@ class HelpConsole(Page):
             "The system date is checked against the last recorded test. If "
             "the clock is behind it, the application will not open, because "
             "everything saved next would be misdated.",
-            self.stale_message(),
             self.archive_message(),
             "The Test console then opens by itself. Closing a page leaves you "
             "on the navigation, which stays on the left the whole time.",
         ))
-
-    def stale_message(self):
-        if self.stale_days is None:
-            return ("A warning appears when the last test on this machine is "
-                    "some days old, so it can be raised before testing.")
-        return ("A warning appears when the last test on this machine is more "
-                "than {} days old, so it can be raised before testing."
-                .format(self.stale_days))
 
     def archive_message(self):
         if self.archive_days is None:
