@@ -63,6 +63,14 @@ SIZE_TOLERANCE = 0.4
 # the cable, and stripes may touch its long sides (see _bands)
 CABLE_BOX_RATIO = 3
 
+# White stripes on a cable drawn round tightly are found by how much paler
+# they are than the cable itself (see _cable_runs): at least this much, in
+# brightness levels, and at least this share of what the good part showed
+MIN_CABLE_CONTRAST = 15
+CABLE_CONTRAST_SHARE = 0.35
+# ... and colourless: a coloured mark on the cable is not a white stripe
+MAX_CABLE_WHITE_SATURATION = 60
+
 # Bands belong to one group while each is within this many stripe pitches
 # of another
 GROUP_LINK = 1.6
@@ -436,10 +444,14 @@ def read_stripes(frame: np.ndarray, roi: dict, colour: Optional[str] = None,
 
     if colour is None:
         colour, _ = dominant_colour(patch)
+        if colour is None and _is_cable_box(roi):
+            colour = "white"
         if colour is None:
             raise ValueError("No stripe colour found in the box.")
     elif colour not in COLOURS:
         raise ValueError(f"Unknown stripe colour '{colour}'.")
+    if colour == "white" and _is_cable_box(roi):
+        return _read_cable(frame, roi, count)
 
     masks = colour_masks(patch)
     bands = _colour_bands(masks, colour)
@@ -704,6 +716,357 @@ def _judge(masks: dict, lab: np.ndarray, colour: str, model: dict) -> Tuple[int,
     return best[2], False, best[3]
 
 
+# ── White stripes along a cable ────────────────────────────────────────────
+#
+# A white stripe on a black cable can look only grey to the camera, and far
+# darker than a pale bench or sheet behind the cable, so no brightness of its
+# own marks it as white. What does is that it is paler than the cable round
+# it. When the box is drawn tight round the cable, the cable is followed along
+# its length as its darkest band, and the brightness is read along the middle
+# of that band, clear of the background at the cable's edges. The stripes are
+# the stretches clearly paler than the cable either side of them. Nothing off
+# the cable is looked at, so pale things beside it can't count.
+
+CABLE_MODE = "cable"
+
+# The cable is found in sections this many pixels long, so a cable lying at
+# a slant or bowed a little is still followed
+CABLE_SECTION = 16
+
+# The cable must be about as dark against what lies beside it as when taught
+# (see _darkness), or it isn't there: no paler than this many times as pale,
+# give or take this much. A good cable stays within about 0.06 of its
+# taught share through changes of light; an empty fixture is far paler.
+CABLE_DARKNESS_FACTOR = 1.4
+CABLE_DARKNESS_SLACK = 0.05
+
+
+def _is_cable_box(box: dict) -> bool:
+    """True for a box drawn tight round a stretch of cable (see _bands)."""
+    w, h = box["width"], box["height"]
+    return max(w, h) >= CABLE_BOX_RATIO * max(1, min(w, h))
+
+
+def _brightness(frame: np.ndarray, box: Tuple[int, int, int, int],
+                along_x: bool) -> Tuple[np.ndarray, np.ndarray]:
+    """(brightness, saturation) inside a box, as float rows across the cable
+    and columns along it."""
+    x, y, w, h = box
+    hsv = cv2.cvtColor(frame[y:y + h, x:x + w], cv2.COLOR_BGR2HSV).astype(np.float32)
+    v, s = hsv[..., 2], hsv[..., 1]
+    return (v, s) if along_x else (v.T, s.T)
+
+
+def _cable_band(v: np.ndarray) -> Tuple[int, int]:
+    """(first row, rows) of the cable in a box drawn round it: the longest
+    run of rows darker than halfway between the darkest and the lightest."""
+    med = np.median(v, axis=1)
+    dark = med <= (med.min() + med.max()) / 2
+    best, start = (0, 0), None
+    for i, d in enumerate(np.append(dark, False)):
+        if d and start is None:
+            start = i
+        elif not d and start is not None:
+            if i - start > best[1]:
+                best = (start, i - start)
+            start = None
+    return best
+
+
+def _track(v: np.ndarray, rows: int) -> np.ndarray:
+    """The middle row of the cable at each column: a band `rows` thick.
+
+    In each short section the darkest band that thick is taken, judged by
+    each row's median so the stripes, a small part of a section, don't move
+    it. A straight line is fitted through the sections, leaving out those far
+    off it, such as where something dark lies beside the cable.
+    """
+    h, w = v.shape
+    rows = max(1, min(rows, h))
+    xs, ys = [], []
+    for c0 in range(0, max(1, w - CABLE_SECTION // 2), CABLE_SECTION // 2):
+        med = np.median(v[:, c0:c0 + CABLE_SECTION], axis=1)
+        sums = np.convolve(med, np.ones(rows), mode="valid")
+        xs.append(c0 + min(CABLE_SECTION, w - c0) / 2)
+        ys.append(int(np.argmin(sums)) + rows / 2)
+    xs, ys = np.array(xs), np.array(ys)
+    keep = np.ones(len(xs), bool)
+    for _ in range(3):
+        if keep.sum() < 2:
+            break
+        slope, icept = np.polyfit(xs[keep], ys[keep], 1)
+        keep = np.abs(ys - (slope * xs + icept)) <= max(2.0, rows / 2)
+    if keep.sum() >= 2:
+        slope, icept = np.polyfit(xs[keep], ys[keep], 1)
+    else:
+        slope, icept = 0.0, float(np.median(ys))
+    return slope * np.arange(w) + icept
+
+
+def _profile(v: np.ndarray, centres: np.ndarray, rows: int) -> np.ndarray:
+    """`v` along the middle of the cable, smoothed a little.
+
+    Only the middle three fifths of its thickness are used: at its edges the
+    cable blurs into whatever lies behind it.
+    """
+    h = v.shape[0]
+    half = max(0.5, rows * 0.3)
+    profile = np.empty(v.shape[1], np.float32)
+    for c, mid in enumerate(centres):
+        r0 = int(np.clip(round(mid - half), 0, h - 1))
+        r1 = int(np.clip(round(mid + half), r0 + 1, h))
+        profile[c] = v[r0:r1, c].mean()
+    return np.convolve(profile, np.array([1, 2, 1]) / 4, mode="same")
+
+
+def _darkness(v: np.ndarray, centres: np.ndarray, rows: int) -> Optional[float]:
+    """How dark the cable is next to what lies just beside it, as a share
+    (0 black on white, 1 no darker), or None if nothing beside it is in view.
+    """
+    h = v.shape[0]
+    inside, beside = [], []
+    gap, reach = rows / 2 + 2, rows / 2 + 2 + max(2, rows / 2)
+    for c, mid in enumerate(centres):
+        r0, r1 = int(round(mid - rows * 0.3)), int(round(mid + rows * 0.3)) + 1
+        if 0 <= r0 and r1 <= h:
+            inside.append(v[r0:r1, c])
+        for a, b in ((mid - reach, mid - gap), (mid + gap, mid + reach)):
+            a, b = int(round(a)), int(round(b))
+            if 0 <= a < b <= h:
+                beside.append(v[a:b, c])
+    if not inside or not beside:
+        return None
+    return float(np.median(np.concatenate(inside))) / max(1.0, float(np.median(np.concatenate(beside))))
+
+
+def _white_only(runs: list, saturation: np.ndarray) -> list:
+    """The stretches that are colourless, as white paint is."""
+    return [r for r in runs
+            if saturation[r[0]:r[1]].mean() <= MAX_CABLE_WHITE_SATURATION]
+
+
+def _clusters(runs: list, link: float) -> List[list]:
+    """Stretches whose middles lie within `link` of the next, together."""
+    clusters, current = [], []
+    for r in runs:
+        if current and (r[0] + r[1]) / 2 - (current[-1][0] + current[-1][1]) / 2 > link:
+            clusters.append(current)
+            current = []
+        current.append(r)
+    return clusters + ([current] if current else [])
+
+
+def _cable_runs(profile: np.ndarray, min_contrast: float) -> list:
+    """Stretches of the cable clearly paler than the cable either side.
+
+    Each is (start, end, how much paler). The cable is not evenly dark, as
+    where it crosses something pale behind it, so each stretch is judged
+    against its own surroundings. It must rise by at least `min_contrast`
+    above the lows either side of it: the darkest before anything paler, and
+    the dip right next to it, as stripes side by side only dip part of the
+    way between them. It is measured where it is more than halfway up from
+    the higher of the dips next to it, so its width doesn't take in a paler
+    stretch of cable beside it. Stretches running off either end are left
+    out, being cut off by the box.
+    """
+    n = len(profile)
+    runs = []
+    i = 1
+    while i < n - 1:
+        # A peak, or the middle of a flat top
+        j = i
+        while j + 1 < n and profile[j + 1] == profile[i]:
+            j += 1
+        if profile[i] > profile[i - 1] and (j + 1 >= n or profile[j + 1] < profile[i]):
+            top = profile[i]
+            peak = (i + j) // 2
+            left = i
+            while left > 0 and profile[left - 1] <= top:
+                left -= 1
+            right = j
+            while right + 1 < n and profile[right + 1] <= top:
+                right += 1
+            rise = float(top - max(profile[left:i + 1].min(), profile[j:right + 1].min()))
+            dip = max(_dip(profile, i, -1, min_contrast), _dip(profile, j, 1, min_contrast))
+            if rise >= min_contrast and top - dip >= min_contrast:
+                half = top - (top - dip) / 2
+                s0, s1 = peak, peak + 1
+                while s0 > 0 and profile[s0 - 1] > half:
+                    s0 -= 1
+                while s1 < n and profile[s1] > half:
+                    s1 += 1
+                if s0 > 0 and s1 < n and s1 - s0 >= 2:
+                    runs.append((s0, s1, rise))
+        i = j + 1
+    return runs
+
+
+def _dip(profile: np.ndarray, start: int, step: int, min_contrast: float) -> float:
+    """The low next to a peak at `start`, going `step` (-1 or 1) from it.
+
+    Followed downhill until the cable turns paler again by more than a
+    wiggle of noise.
+    """
+    wiggle = max(3.0, min_contrast * 0.25)
+    low = float(profile[start])
+    k = start + step
+    while 0 <= k < len(profile) and profile[k] <= low + wiggle:
+        low = min(low, float(profile[k]))
+        k += step
+    return low
+
+
+def _run_outlines(runs: list, centres: np.ndarray, rows: int,
+                  box: Tuple[int, int, int, int], along_x: bool) -> List[np.ndarray]:
+    """Each stretch as a rectangle across the cable, in frame coordinates."""
+    x, y = box[0], box[1]
+    out = []
+    for s0, s1, _ in runs:
+        mid = float(centres[(s0 + s1) // 2])
+        a, b = mid - rows / 2, mid + rows / 2
+        if along_x:
+            pts = [(x + s0, y + a), (x + s1, y + a), (x + s1, y + b), (x + s0, y + b)]
+        else:
+            pts = [(x + a, y + s0), (x + b, y + s0), (x + b, y + s1), (x + a, y + s1)]
+        out.append(np.array(pts, np.float32))
+    return out
+
+
+def _read_cable(frame: np.ndarray, roi: dict, count: Optional[int]) -> Tuple[dict, List[np.ndarray]]:
+    """read_stripes() for white stripes in a box drawn tight round the cable."""
+    box = (roi["x"], roi["y"], roi["width"], roi["height"])
+    along_x = roi["width"] >= roi["height"]
+    v, sat = _brightness(frame, box, along_x)
+    _, rows = _cable_band(v)
+    if rows < 2:
+        raise ValueError("No cable found in the box. Draw it tight round the cable.")
+    centres = _track(v, rows)
+    runs = _cable_runs(_profile(v, centres, rows), MIN_CABLE_CONTRAST)
+    runs = _white_only(runs, _profile(sat, centres, rows))
+    if not runs:
+        raise ValueError("No white stripes found on the cable.")
+    # A box along the cable can take in other pale marks, such as where the
+    # cable crosses a bracket. The stripes are the ones lying close together:
+    # within half as far again as the closest two
+    if len(runs) > 1:
+        mids = [(s + e) / 2 for s, e, _ in runs]
+        clusters = _clusters(runs, min(np.diff(mids)) * 1.5)
+        wanted = int(count) if count else None
+        runs = max(clusters, key=lambda c: (len(c) == wanted, len(c), sum(r[2] for r in c)))
+    if count and int(count) != len(runs):
+        raise ValueError(f"{len(runs)} white stripes found together on the cable, "
+                         f"not {int(count)}.")
+
+    widths = [e - s for s, e, _ in runs]
+    mids = [(s + e) / 2 for s, e, _ in runs]
+    model = {
+        "roi": {k: int(roi[k]) for k in ("x", "y", "width", "height")},
+        "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
+        "colour": "white",
+        "count": len(runs),
+        "mode": CABLE_MODE,
+        "axis": [1.0, 0.0] if along_x else [0.0, 1.0],
+        "stripe_width": float(np.median(widths)),
+        "stripe_length": float(rows),
+        "cable_width": rows,
+        "span": float(runs[-1][1] - runs[0][0]),
+        # Middle of one stripe to the middle of the next
+        "pitch": float(np.mean(np.diff(mids))) if len(runs) > 1 else 0.0,
+        "size_tolerance": SIZE_TOLERANCE,
+        "contrast": float(np.median([r[2] for r in runs])),
+    }
+    # How dark the cable is against what lies beside it, measured where a
+    # check will look for it, so an empty fixture isn't taken for a cable
+    window = _cable_window(frame, model, None)
+    wv, _ = _brightness(frame, window, along_x)
+    model["cable_darkness"] = _darkness(wv, _track(wv, rows), rows)
+    return model, _run_outlines(runs, centres, rows, box, along_x)
+
+
+def _cable_window(frame: np.ndarray, group: dict,
+                  region: Optional[dict]) -> Tuple[int, int, int, int]:
+    """Where to look for a cable group: its own area if it has one, else the
+    box it was taught in, widened enough for the cable to have moved a
+    little. Camera 2's region isn't used: it is not drawn round this cable,
+    and other dark things in it could be taken for it."""
+    fh, fw = frame.shape[:2]
+    if region is not None:
+        x, y, w, h = region["x"], region["y"], region["width"], region["height"]
+    else:
+        r = group["roi"]
+        along_x = group["axis"][0] >= group["axis"][1]
+        pad_along = int(max(r["width"], r["height"]) * 0.1)
+        pad_across = int(min(r["width"], r["height"])) * 2
+        px, py = (pad_along, pad_across) if along_x else (pad_across, pad_along)
+        x, y, w, h = r["x"] - px, r["y"] - py, r["width"] + 2 * px, r["height"] + 2 * py
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(fw, x + w), min(fh, y + h)
+    return x0, y0, max(0, x1 - x0), max(0, y1 - y0)
+
+
+def _inspect_cable(frame: np.ndarray, group: dict, region: Optional[dict]) -> GroupResult:
+    """_inspect_group() for white stripes taught on a cable drawn round tightly.
+
+    The cable is followed through the window as the darkest band as thick as
+    it was taught, and must be about as dark against what lies beside it as
+    it was then. Its stripes are counted along it: they must be as many as
+    taught, about as wide, and spread over about the same length.
+    """
+    box = _cable_window(frame, group, region)
+    expected = group["count"]
+    along_x = group["axis"][0] >= group["axis"][1]
+    result = GroupResult(ok=False, colour="white", expected=expected, seen="none",
+                         region=box if region is not None else None)
+    if box[2] < 8 or box[3] < 8:
+        return result
+
+    v, sat = _brightness(frame, box, along_x)
+    rows = group.get("cable_width", 3)
+    centres = _track(v, rows)
+    taught_dark = group.get("cable_darkness")
+    if taught_dark is not None:
+        dark = _darkness(v, centres, rows)
+        if dark is None or dark > taught_dark * CABLE_DARKNESS_FACTOR + CABLE_DARKNESS_SLACK:
+            result.seen = "no cable"
+            return result
+
+    taught = group.get("contrast", 0.0)
+    min_contrast = max(MIN_CABLE_CONTRAST * 0.8, CABLE_CONTRAST_SHARE * taught)
+    runs = _cable_runs(_profile(v, centres, rows), min_contrast)
+    runs = _white_only(runs, _profile(sat, centres, rows))
+
+    tol = group.get("size_tolerance", SIZE_TOLERANCE)
+    width = group["stripe_width"]
+    pitch = group.get("pitch", 0.0)
+    # Slivers are noise; a run much wider than a stripe is stripes that touch,
+    # counted by how many pitches it covers
+    runs = [r for r in runs if r[1] - r[0] >= width * (1 - tol) * 0.6]
+
+    def stripes_in(run):
+        w = run[1] - run[0]
+        if pitch > width and w > width / (1 - tol):
+            return max(1, int(round((w - width) / pitch + 1)))
+        return 1
+
+    # Stripes lying close together form a group, as when taught; the group
+    # nearest the taught count is the one judged
+    link = (pitch if pitch else width * 2) * 1.5
+    best = min(_clusters(runs, link),
+               key=lambda c: (abs(sum(map(stripes_in, c)) - expected), -sum(x[2] for x in c)),
+               default=[])
+
+    count = sum(map(stripes_in, best))
+    span = best[-1][1] - best[0][0] if best else 0.0
+    sized = all(_within(r[1] - r[0], width, tol) for r in best if stripes_in(r) == 1)
+    spread = expected == 1 or _within(span, group["span"], tol)
+    result.ok = count == expected and sized and spread
+    result.count = count
+    result.seen = "none" if not count else f"white x{count}" + (
+        " of the wrong size or spacing" if count == expected and not result.ok else "")
+    result.stripe_boxes = _run_outlines(best, centres, rows, box, along_x)
+    return result
+
+
 def set_group_regions(part_number: str, regions: List[Optional[dict]]) -> dict:
     """Give each of a taught part's stripe groups a new search region.
 
@@ -748,6 +1111,8 @@ def _inspect_group(frame: np.ndarray, group: dict, region: Optional[dict]) -> Gr
     another group or another cable, is never counted. Stripes crossing its
     edge are left out, as at the edge of the frame.
     """
+    if group.get("mode") == CABLE_MODE:
+        return _inspect_cable(frame, group, group.get("region"))
     area, x0, y0, box = frame, 0, 0, None
     if region is not None:
         area, box = _crop(frame, region, 0.0)
