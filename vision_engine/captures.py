@@ -5,14 +5,15 @@ Pictures the cameras took during each test, kept so a result can be looked
 at again later on the Work Data page.
 
 Each picture is stored as a JPEG under vision_captures/<date>/, with the
-verdict written across its top and any found stripes outlined. The test
+verdict and what was found written across its top, and any found stripes
+outlined. The test
 record holds its path relative to the application folder, so the folder can
 move with the application.
 """
 import os
 import shutil
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Sequence, Union
 
 import cv2
 import numpy as np
@@ -41,28 +42,61 @@ def outlined(frame: np.ndarray, outlines: Optional[List[np.ndarray]],
     return img
 
 
+def _wrapped(text: str, width: int, font_scale: float, thick: int) -> List[str]:
+    """`text` broken at spaces into lines no wider than `width` pixels."""
+    lines, line = [], ""
+    for word in text.split():
+        candidate = (line + " " + word).strip()
+        if line and cv2.getTextSize(candidate, cv2.FONT_HERSHEY_SIMPLEX,
+                                    font_scale, thick)[0][0] > width:
+            lines.append(line)
+            line = word
+        else:
+            line = candidate
+    return lines + ([line] if line else [])
+
+
+def captioned(img: np.ndarray, camera_name: str, verdict: str,
+              detail: Union[str, Sequence[str]] = "") -> np.ndarray:
+    """`img` with a bar across its top giving the camera, the verdict and
+    `detail`, one line per entry, wrapped to fit the picture's width."""
+    colour = _VERDICT_BGR.get(verdict, (90, 90, 90))
+    details = [detail] if isinstance(detail, str) else list(detail)
+    row = max(22, img.shape[0] // 18)
+    font_scale, thick = row / 36, max(1, row // 14)
+    lines = _wrapped("%s  %s" % (camera_name, verdict or "-"),
+                     img.shape[1] - 16, font_scale, thick)
+    for d in details:
+        lines += _wrapped(d, img.shape[1] - 16, font_scale * 0.85, thick)
+    bar = row * len(lines) + row // 4
+    out = cv2.copyMakeBorder(img, bar, 0, 0, 0, cv2.BORDER_CONSTANT, value=colour)
+    for n, line in enumerate(lines):
+        cv2.putText(out, line, (8, int(row * (n + 0.72))), cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale if n == 0 else font_scale * 0.85, (255, 255, 255),
+                    thick, cv2.LINE_AA)
+    return out
+
+
 def save(frame: np.ndarray, camera_name: str, part_number: str, verdict: str,
-         detail: str = "", outlines: Optional[List[np.ndarray]] = None) -> Optional[str]:
+         detail: Union[str, Sequence[str]] = "",
+         outlines: Optional[List[np.ndarray]] = None) -> Optional[str]:
     """Store one camera's picture of a test. Returns its relative path.
 
-    `outlines` are shapes in frame coordinates, such as the stripes found.
-    Returns None if the picture could not be written; a test is never
-    failed for want of its picture.
+    `detail` says what was found, as one line or a list of them, and goes on
+    the picture under the verdict. `outlines` are shapes in frame
+    coordinates, such as the stripes found. Returns None if the picture could
+    not be written; a test is never failed for want of its picture.
     """
     try:
         img = outlined(frame, outlines, verdict)
-        colour = _VERDICT_BGR.get(verdict, (90, 90, 90))
 
         scale = min(1.0, MAX_SIDE / max(img.shape[:2]))
         if scale < 1.0:
             img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
-        # The verdict across the top, so the picture explains itself anywhere
-        text = "%s  %s  %s" % (camera_name, verdict or "-", detail)
-        bar = max(22, img.shape[0] // 18)
-        cv2.rectangle(img, (0, 0), (img.shape[1], bar), colour, -1)
-        cv2.putText(img, text.strip(), (8, int(bar * 0.72)), cv2.FONT_HERSHEY_SIMPLEX,
-                    bar / 36, (255, 255, 255), max(1, bar // 14), cv2.LINE_AA)
+        # The result above the picture, so it explains itself anywhere and
+        # covers none of what the camera saw
+        img = captioned(img, camera_name, verdict, detail)
 
         now = datetime.now()
         folder = os.path.join(CAPTURES_DIR, now.strftime("%Y-%m-%d"))

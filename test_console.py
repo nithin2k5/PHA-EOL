@@ -1938,7 +1938,8 @@ class EOLTesterGUI:
 
         Each group's search region is boxed and its stripes outlined, green
         if that group was found and red if not, so a picture shows which
-        group failed. A group searched across the whole frame has no box.
+        group failed. A group searched across the whole frame has no box;
+        with several groups, its label goes by its stripes instead.
         """
         img = result.frame.copy()
         thick = max(2, img.shape[1] // 320)
@@ -1953,6 +1954,12 @@ class EOLTesterGUI:
                 cv2.rectangle(img, (x, y), (x + w, y + h), ink, thick)
                 label = f"GROUP {n}" if several else "DETECTION REGION"
                 cv2.putText(img, label, (x + 4, max(y - 8, 18)),
+                            cv2.FONT_HERSHEY_SIMPLEX, scale, ink, thick)
+            elif several and group.stripe_boxes:
+                # Searched across the whole frame: name it by its stripes
+                x, y, _, _ = cv2.boundingRect(
+                    np.vstack(group.stripe_boxes).astype(np.int32))
+                cv2.putText(img, f"GROUP {n}", (x, max(y - 8, 18)),
                             cv2.FONT_HERSHEY_SIMPLEX, scale, ink, thick)
         return img
 
@@ -2004,6 +2011,25 @@ class EOLTesterGUI:
         popup.geometry(f"+{max(x, 0)}+{max(y, 0)}")
         popup.after(self.CAMERA_NG_POPUP_MS,
                     lambda: popup.winfo_exists() and popup.destroy())
+
+    @staticmethod
+    def cam1_detail(result):
+        """Camera 1's result in words, for its saved picture."""
+        if result.judgement == "ERROR":
+            return [result.error or "Check failed"]
+        return ["Match %.2f, needs %.2f" % (result.match_score, result.threshold)]
+
+    @staticmethod
+    def cam2_detail(result):
+        """Camera 2's result in words, one line per stripe group, for its
+        saved picture."""
+        if result.judgement == "ERROR":
+            return [result.error or "Check failed"]
+        several = len(result.groups) > 1
+        return ["%sExpected %s x%d, found %s%s" % (
+                    "Group %d: " % n if several else "", g.colour, g.expected,
+                    g.seen or "none", "" if g.ok else "  (NG)" if several else "")
+                for n, g in enumerate(result.groups, start=1)]
 
     @staticmethod
     def verdict_of(result):
@@ -2068,12 +2094,15 @@ class EOLTesterGUI:
                                                 np.float32)]
                         out["cam1_frame"] = captures.outlined(result.frame, outline, verdict)
                         out["cam1_image"] = captures.save(result.frame, "CAM1", part_number,
-                                                          verdict, "", outline)
+                                                          verdict, self.cam1_detail(result),
+                                                          outline)
                 elif cam1_on:
                     frame = self.grab_camera1()
                     if frame is not None:
                         out["cam1_frame"] = frame
-                        out["cam1_image"] = captures.save(frame, "CAM1", part_number, "")
+                        out["cam1_image"] = captures.save(
+                            frame, "CAM1", part_number, "",
+                            "Not checked by camera: no vision check taught for this part")
             except Exception as e:
                 out["cam1_error"] = str(e)
             try:
@@ -2088,12 +2117,14 @@ class EOLTesterGUI:
                         framed = self.with_stripe_regions(result)
                         out["cam2_frame"] = framed
                         out["cam2_image"] = captures.save(
-                            framed, "CAM2", part_number, verdict, result.seen)
+                            framed, "CAM2", part_number, verdict, self.cam2_detail(result))
                 elif cam2_on:
                     frame = stripe_check.capture_frame()
                     if frame is not None:
                         out["cam2_frame"] = frame
-                        out["cam2_image"] = captures.save(frame, "CAM2", part_number, "OFF")
+                        out["cam2_image"] = captures.save(
+                            frame, "CAM2", part_number, "OFF",
+                            "Not checked: no stripe check taught for this part")
             except Exception as e:
                 out["cam2_error"] = str(e)
 
