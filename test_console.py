@@ -854,6 +854,9 @@ class EOLTesterGUI:
 
         self.log_operator_action("TEST_START", "Started from the START button")
         self.safe_update_message("Test started - waiting for the PLC...", "blue")
+        # The cable is in the fixture now, so check it on both cameras while
+        # the PLC runs the test
+        self.start_camera_checks()
         self.start_check_async()
 
     def create_footer(self):
@@ -2505,8 +2508,8 @@ class EOLTesterGUI:
                     self.endingNGCableValidated = False
                     self.log_operator_action("NG_CHECK_END_FAILED", "Known-bad cable passed every device")
             else:
-                # The cameras checked the part as the test started; it is
-                # saved once their verdicts are in
+                # The cameras checked the cable when START was pressed, or
+                # check it now; it is saved once their verdicts are in
                 self.after_camera_checks(self.finish_test_cycle)
                 return
 
@@ -4360,9 +4363,9 @@ class EOLTesterGUI:
         # 2. Part-presence sensors
         # 3. Load cell/position registers
         
-        # Check the part on both cameras straight away, while the PLC runs
-        # the test
-        self.start_camera_checks()
+        # No camera check here: this also runs as a part is loaded, before
+        # any cable is in the fixture. START checks the cable it starts, and
+        # later cables are checked as their result comes in.
 
         # Start real PLC monitoring process
         self.root.after(1000, self.start_real_plc_test_process)
