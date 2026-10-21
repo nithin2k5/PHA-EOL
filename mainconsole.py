@@ -508,14 +508,16 @@ class MainConsole(tk.Tk):
 
         Returns False when the machine should not be used - the system date
         is behind the last test, which would misdate everything saved next.
+        Tests are saved with this PC's date, so that is the date compared,
+        not the database server's.
         """
         try:
             conn = db.connect()
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT DATEDIFF(CURDATE(), MAX(TEST_DAY_DATE))
+                SELECT DATEDIFF(%s, MAX(TEST_DAY_DATE))
                 FROM TBL_PART_RUNNING_SERIAL
-            """)
+            """, (datetime.today().date(),))
             row = cursor.fetchone()
             cursor.close()
             conn.close()
