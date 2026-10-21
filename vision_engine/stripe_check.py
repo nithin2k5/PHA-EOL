@@ -59,12 +59,6 @@ COLOURS = ("white", "red", "yellow", "green", "blue", "purple")
 # a different part. Hand-painted bands vary, so this is loose.
 SIZE_TOLERANCE = 0.4
 
-# White paint looks grey in poor light, so white also takes pixels clearly
-# paler than what lies just round them. "Just round" is this many pixels
-# across; anything narrower that is paler than its surroundings, such as a
-# stripe, counts.
-WHITE_REACH = 31
-
 # Bands belong to one group while each is within this many stripe pitches
 # of another
 GROUP_LINK = 1.6
@@ -124,14 +118,8 @@ def colour_masks(bgr: np.ndarray) -> dict:
     vivid = ((s > 90) & (v > 45)) | shine
     # Purple and green paint is less saturated than the rest
     pale = ((s > 55) & (v > 45)) | shine
-    # Saturation is unsteady on dark pixels, so grey is judged by how far
-    # apart the channels are instead. A top-hat keeps pale detail narrower
-    # than its kernel and drops broad pale areas such as a bench.
-    chroma = bgr.max(axis=2).astype(np.int16) - bgr.min(axis=2)
-    paler = cv2.morphologyEx(v, cv2.MORPH_TOPHAT, cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (WHITE_REACH, WHITE_REACH)))
     masks = {
-        "white": ((s < 55) & (v > 185)) | ((chroma < 40) & (v > 50) & (paler > 25)),
+        "white": (s < 55) & (v > 185),
         "red": vivid & ((h < 9) | (h > 165)),
         "yellow": vivid & (h >= 18) & (h <= 38),
         "green": pale & (h >= 40) & (h <= 88),
@@ -141,21 +129,6 @@ def colour_masks(bgr: np.ndarray) -> dict:
     kernel = np.ones((3, 3), np.uint8)
     return {c: cv2.morphologyEx(m.astype(np.uint8) * 255, cv2.MORPH_OPEN, kernel)
             for c, m in masks.items()}
-
-
-def masks_in(frame: np.ndarray, box: Tuple[int, int, int, int]) -> dict:
-    """colour_masks() of one box of the frame, judged with the frame round it.
-
-    Whether a pixel is paler than its surroundings depends on what lies
-    beyond the box too: a pale bench cut down to a sliver by the box edge
-    would otherwise look like a stripe.
-    """
-    x, y, w, h = box
-    fh, fw = frame.shape[:2]
-    x0, y0 = max(0, x - WHITE_REACH), max(0, y - WHITE_REACH)
-    x1, y1 = min(fw, x + w + WHITE_REACH), min(fh, y + h + WHITE_REACH)
-    masks = colour_masks(frame[y0:y1, x0:x1])
-    return {c: m[y - y0:y - y0 + h, x - x0:x - x0 + w] for c, m in masks.items()}
 
 
 def _paint_mask(masks: dict) -> np.ndarray:
@@ -410,13 +383,14 @@ def _colour_bands(masks: dict, colour: str, max_extent: float = 0.0) -> list:
     return _bands(mask, max_extent=max_extent)
 
 
-def dominant_colour(masks: dict) -> Tuple[Optional[str], int]:
+def dominant_colour(patch: np.ndarray) -> Tuple[Optional[str], int]:
     """The stripe colour covering most of a patch, and how many pixels it has.
 
-    `masks` are the patch's colour masks. Only band-shaped patches count, so a
-    background colour filling the whole patch, or scattered specks, don't win.
+    Only band-shaped patches count, so a background colour filling the whole
+    patch, or scattered specks, don't win.
     """
-    patch_area = masks["white"].size
+    masks = colour_masks(patch)
+    patch_area = patch.shape[0] * patch.shape[1]
     best, best_area = None, 0
     for colour in COLOURS:
         bands = [b for b in _colour_bands(masks, colour) if b["area"] < patch_area * 0.5]
@@ -443,17 +417,16 @@ def read_stripes(frame: np.ndarray, roi: dict, colour: Optional[str] = None,
     if roi["width"] < 8 or roi["height"] < 8:
         raise ValueError("The box is too small. Draw it round the whole stripe group.")
     frame = enhance(frame)
-    patch, box = _crop(frame, roi, 0.0)
-    x0, y0 = box[0], box[1]
-    masks = masks_in(frame, box)
+    patch, (x0, y0, _, _) = _crop(frame, roi, 0.0)
 
     if colour is None:
-        colour, _ = dominant_colour(masks)
+        colour, _ = dominant_colour(patch)
         if colour is None:
             raise ValueError("No stripe colour found in the box.")
     elif colour not in COLOURS:
         raise ValueError(f"Unknown stripe colour '{colour}'.")
 
+    masks = colour_masks(patch)
     bands = _colour_bands(masks, colour)
     if not bands:
         raise ValueError(f"No {colour} stripes found in the box.")
@@ -769,7 +742,7 @@ def _inspect_group(frame: np.ndarray, group: dict, region: Optional[dict]) -> Gr
         return GroupResult(ok=False, colour=colour, expected=expected, seen="none",
                            region=box)
 
-    masks = masks_in(frame, box) if box is not None else colour_masks(area)
+    masks = colour_masks(area)
     lab = cv2.cvtColor(area, cv2.COLOR_BGR2LAB).astype(np.float32)
     count, ok, bands = _judge(masks, lab, colour, group)
 
