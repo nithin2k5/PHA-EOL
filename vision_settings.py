@@ -808,6 +808,9 @@ class RoiView(tk.Canvas):
 
 _ORPHAN = "!unmapped:"
 
+# The camera tab last open, so the page reopens on it
+_last_tab = {"tab": 1}
+
 
 class VisionSettings:
     """The page as a console: title bar, footer, and the page between them."""
@@ -837,22 +840,73 @@ def render(parent):
     content.columnconfigure(0, weight=1)
     content.rowconfigure(2, weight=1)
 
-    # ── Header ─────────────────────────────────────────────────────────────
-    header = tk.Frame(content, bg=BG)
-    header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+    # ── Navbar: a tab for each camera ──────────────────────────────────────
+    # Each camera has a check of its own, so each has a page of its own. The
+    # bar shows which is open, a dot for how each camera is, and the open
+    # camera's state in words.
+    nav = tk.Frame(content, bg=ui.NAVY, height=48)
+    nav.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+    nav.pack_propagate(False)
 
-    tk.Label(header, text="Part-presence verification by template matching "
-                          "(normalised cross-correlation)",
-             bg=BG, fg=TXT_DIM, font=(FONT, 11)).pack(side="left")
-
-    pill = tk.Frame(header, bg=ui.SUBTLE, padx=12, pady=7,
-                    highlightthickness=1, highlightbackground=LINE)
-    pill.pack(side="right")
-    pill_dot = tk.Label(pill, text="●", bg=ui.SUBTLE, fg=TXT_FAINT, font=(FONT, 14))
+    pill = tk.Frame(nav, bg=ui.NAVY)
+    pill.pack(side="right", padx=14)
+    pill_dot = tk.Label(pill, text="●", bg=ui.NAVY, fg=TXT_FAINT, font=(FONT, 14))
     pill_dot.pack(side="left", padx=(0, 7))
-    pill_txt = tk.Label(pill, text="Checking camera…", bg=ui.SUBTLE, fg=TXT_DIM,
+    pill_txt = tk.Label(pill, text="Checking camera…", bg=ui.NAVY, fg=ui.TEXT_ON_DARK,
                         font=(FONT, 11, "bold"))
     pill_txt.pack(side="left")
+
+    pages, tabs = {}, {}
+    # (state in words, colour) of each camera
+    cam_states = {1: ("Checking camera…", TXT_FAINT), 2: ("Checking camera…", TXT_FAINT)}
+    shown = {"tab": _last_tab["tab"]}
+
+    def _tab(number, title, subtitle):
+        tab = tk.Frame(nav, bg=ui.NAVY, cursor="hand2", padx=16)
+        tab.pack(side="left", fill="y", padx=(6 if number == 1 else 2, 0), pady=6)
+        dot = tk.Label(tab, text="●", bg=ui.NAVY, fg=TXT_FAINT, font=(FONT, 12))
+        dot.pack(side="left", padx=(0, 8))
+        name = tk.Label(tab, text=title, bg=ui.NAVY, fg=ui.TEXT_ON_DARK,
+                        font=(FONT, 12, "bold"))
+        name.pack(side="left")
+        sub = tk.Label(tab, text=subtitle, bg=ui.NAVY, fg=ui.ACCENT_SOFT, font=(FONT, 10))
+        sub.pack(side="left", padx=(8, 0))
+        tabs[number] = {"frame": tab, "dot": dot, "name": name, "sub": sub, "hover": False}
+        for w_ in (tab, dot, name, sub):
+            w_.bind("<Button-1>", lambda e, n=number: _show_tab(n))
+            w_.bind("<Enter>", lambda e, n=number: _hover_tab(n, True))
+            w_.bind("<Leave>", lambda e, n=number: _hover_tab(n, False))
+
+    def _hover_tab(number, on):
+        tabs[number]["hover"] = on
+        _paint_tabs()
+
+    def _paint_tabs():
+        if not alive["page"]:
+            return
+        for number, t in tabs.items():
+            active = number == shown["tab"]
+            fill = ui.ACCENT_FILL if active else (ui.ACCENT_ACTIVE if t["hover"] else ui.NAVY)
+            for w_ in (t["frame"], t["dot"], t["name"], t["sub"]):
+                w_.config(bg=fill)
+            t["name"].config(fg=ui.TEXT_ON_ACCENT if active else ui.TEXT_ON_DARK)
+            t["sub"].config(fg=ui.TEXT_ON_ACCENT if active else ui.ACCENT_SOFT)
+            t["dot"].config(fg=cam_states[number][1])
+        text, color = cam_states[shown["tab"]]
+        pill_txt.config(text=text)
+        pill_dot.config(fg=color)
+
+    def _show_tab(number):
+        shown["tab"] = _last_tab["tab"] = number
+        for n, page in pages.items():
+            if n == number:
+                page.grid()
+            else:
+                page.grid_remove()
+        _paint_tabs()
+
+    _tab(1, "CAMERA 1", "Part check")
+    _tab(2, "CAMERA 2", "Stripe check")
 
     if not _cv2_ok or not _pil_ok:
         missing = " and ".join(n for n, ok in
@@ -863,11 +917,24 @@ def render(parent):
                            % missing, bg=ui.ROW_BAND, fg=TXT,
                  font=(FONT, 11, "bold"), pady=6).pack(anchor="w")
 
-    # ── Body: parts table + right rail ─────────────────────────────────────
-    body = tk.Frame(content, bg=BG)
-    body.grid(row=2, column=0, sticky="nsew")
-    body.columnconfigure(0, weight=1)
-    body.rowconfigure(0, weight=1)
+    def _page(number, about):
+        """A camera's page: a line on what it checks, then its body."""
+        page = tk.Frame(content, bg=BG)
+        page.grid(row=2, column=0, sticky="nsew")
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(1, weight=1)
+        tk.Label(page, text=about, bg=BG, fg=TXT_DIM, font=(FONT, 11),
+                 anchor="w").grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        page_body = tk.Frame(page, bg=BG)
+        page_body.grid(row=1, column=0, sticky="nsew")
+        page_body.columnconfigure(0, weight=1)
+        page_body.rowconfigure(0, weight=1)
+        pages[number] = page
+        return page_body
+
+    # ══ Camera 1: part check ═══════════════════════════════════════════════
+    body = _page(1, "Camera 1 checks that the right part is in the fixture, by template "
+                    "matching (normalised cross-correlation).")
 
     parts_card = _card(body, "Taught Parts",
                        "each part number maps to one template dataset", icon="list")
@@ -976,7 +1043,7 @@ def render(parent):
         return "part", sel[0]
 
     # ── Right rail: camera ─────────────────────────────────────────────────
-    cam_card = _card(rail, "Camera", icon="camera")
+    cam_card = _card(rail, "Camera 1", icon="camera")
     cam_card.pack(fill="x", padx=(0, 6))
     cb = cam_card.body
     cam_device = _kv_row(cb, "Device", "—", mono=True)
@@ -990,12 +1057,12 @@ def render(parent):
     btn_cam_check = _btn(cam_btns, "Re-check", BTN_NEUTRAL, icon="refresh")
     btn_cam_check.pack(side="left", padx=(6, 0))
 
-    def _paint_camera(state_text, color, dot_color=None):
+    def _paint_camera(state_text, color):
         if not alive["page"]:
             return
         cam_state.config(text=state_text, fg=color)
-        pill_txt.config(text=state_text, fg=color)
-        pill_dot.config(fg=dot_color or color)
+        cam_states[1] = (state_text, color)
+        _paint_tabs()
 
     def _refresh_camera():
         cam = _load_cam_cfg()
@@ -1039,105 +1106,6 @@ def render(parent):
             _refresh_camera()
 
     btn_cam_cfg.configure(command=_configure_camera)
-
-    # ── Right rail: stripe check (camera 2) ────────────────────────────────
-    # Camera 2 checks the painted stripes on the cable. It has its own device
-    # and its own taught parts, kept apart from the template datasets above.
-    from vision_engine.stripes import stripe_check
-
-    stripe_card = _card(rail, "Stripe Check", "camera 2", icon="camera")
-    stripe_card.pack(fill="x", padx=(0, 6), pady=(12, 0))
-    sb_ = stripe_card.body
-    cam2_device = _kv_row(sb_, "Device", "—", mono=True)
-
-    stripe_tree = ttk.Treeview(sb_, columns=("part", "stripes"), show="headings",
-                               selectmode="browse", height=5)
-    stripe_tree.heading("part", text="PART NUMBER")
-    stripe_tree.heading("stripes", text="STRIPES")
-    stripe_tree.column("part", width=150, anchor="w")
-    stripe_tree.column("stripes", width=110, anchor="center")
-    stripe_tree.tag_configure("empty", foreground=TXT_FAINT)
-    stripe_tree.pack(fill="x", pady=(8, 0))
-
-    stripe_btns = tk.Frame(sb_, bg=PANEL)
-    stripe_btns.pack(fill="x", pady=(10, 0))
-    stripe_btns.columnconfigure((0, 1), weight=1, uniform="stripe")
-    btn_s_teach = _btn(stripe_btns, "Teach New", BTN_SUCCESS, icon="box")
-    btn_s_teach.grid(row=0, column=0, sticky="ew", padx=(0, 3))
-    btn_s_reteach = _btn(stripe_btns, "Re-teach", BTN_NEUTRAL, icon="refresh")
-    btn_s_reteach.grid(row=0, column=1, sticky="ew", padx=(3, 0))
-    btn_s_test = _btn(stripe_btns, "Run Test", BTN_PRIMARY, icon="play")
-    btn_s_test.grid(row=1, column=0, sticky="ew", padx=(0, 3), pady=(6, 0))
-    btn_s_del = _btn(stripe_btns, "Delete", BTN_DANGER, icon="alert")
-    btn_s_del.grid(row=1, column=1, sticky="ew", padx=(3, 0), pady=(6, 0))
-    btn_cam2_cfg = _btn(sb_, "Configure Camera 2…", BTN_NEUTRAL, icon="gear")
-    btn_cam2_cfg.pack(fill="x", pady=(6, 0))
-
-    def _stripe_selection():
-        sel = stripe_tree.selection()
-        return sel[0] if sel and sel[0] != "!none" else None
-
-    def _on_stripe_select(event=None):
-        chosen = _stripe_selection() is not None
-        for b in (btn_s_reteach, btn_s_test, btn_s_del):
-            _set_btn_enabled(b, chosen)
-
-    def _refresh_stripes(select=None):
-        if not alive["page"]:
-            return
-        cam2 = _load_cam_cfg(stripe_check.CAMERA_SOURCE)
-        cam2_device.config(
-            text=("Camera %d  ·  %dx%d" % (cam2["index"], cam2["width"], cam2["height"])
-                  if cam2["enabled"] else "Not configured"),
-            fg=TXT if cam2["enabled"] else WARN)
-
-        remembered = select or _stripe_selection()
-        stripe_tree.delete(*stripe_tree.get_children())
-        for pno in stripe_check.taught_parts():
-            model = stripe_check.load_model(pno) or {}
-            stripe_tree.insert("", "end", iid=pno, values=(
-                pno, stripe_check.describe(model)))
-        if not stripe_tree.get_children():
-            stripe_tree.insert("", "end", iid="!none", tags=("empty",),
-                               values=("No parts taught", ""))
-        if remembered and stripe_tree.exists(remembered):
-            stripe_tree.selection_set(remembered)
-            stripe_tree.see(remembered)
-        _on_stripe_select()
-
-    def _stripe_teach(part_number=None):
-        saved = _open_stripe_teach(parent, part_number)
-        if saved:
-            _refresh_stripes(select=saved)
-
-    def _stripe_test():
-        pno = _stripe_selection()
-        if pno:
-            _open_stripe_test(parent, pno)
-
-    def _stripe_delete():
-        pno = _stripe_selection()
-        if not pno or not messagebox.askyesno(
-                "Delete Stripe Check",
-                "Delete the stripe check for part “%s”?\n\n"
-                "Camera 2 will no longer check this part on the line." % pno,
-                parent=parent):
-            return
-        stripe_check.delete_model(pno)
-        _refresh_stripes()
-
-    def _configure_cam2():
-        if _open_camera_dialog(parent, stripe_check.CAMERA_SOURCE,
-                               "Stripe Camera (Camera 2)"):
-            _refresh_stripes()
-
-    btn_s_teach.configure(command=lambda: _stripe_teach(None))
-    btn_s_reteach.configure(command=lambda: _stripe_teach(_stripe_selection()))
-    btn_s_test.configure(command=_stripe_test)
-    btn_s_del.configure(command=_stripe_delete)
-    btn_cam2_cfg.configure(command=_configure_cam2)
-    stripe_tree.bind("<<TreeviewSelect>>", _on_stripe_select)
-    stripe_tree.bind("<Double-1>", lambda e: _stripe_test())
 
     # ── Right rail: part coverage ────────────────────────────────────────────
     # The parts table audits datasets — files that exist and whether they're
@@ -1189,8 +1157,7 @@ def render(parent):
 
     ttk.Checkbutton(ib, text="Camera 1 check enabled", variable=enabled_var).pack(fill="x")
     tk.Label(ib, text="Also in camera 1's setup on the Test console. When off, camera 1 "
-                      "doesn't check the parts; camera 2 is turned on or off in its own "
-                      "setup there.",
+                      "doesn't check the parts.",
              bg=PANEL, fg=TXT_FAINT, font=(FONT, 10), anchor="w",
              wraplength=265, justify="left").pack(fill="x", padx=(22, 0), pady=(0, 12))
 
@@ -1390,6 +1357,269 @@ def render(parent):
     tree.bind("<Double-1>", lambda e: _run_test())
     tree.bind("<Delete>", lambda e: _delete())
 
+    # ══ Camera 2: stripe check ═════════════════════════════════════════════
+    # Camera 2 checks the painted stripes on the cable. It has its own device
+    # and its own taught parts, kept apart from camera 1's template datasets.
+    from vision_engine import camera as cam_io
+    from vision_engine.stripes import stripe_check
+
+    body2 = _page(2, "Camera 2 checks the painted stripes on the cable: the cable's colour, "
+                     "and each group's stripe count and colours.")
+
+    s_card = _card(body2, "Stripe Parts",
+                   "each part number's stripe groups, taught on camera 2", icon="list")
+    s_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+    sp = s_card.body
+    s_toolbar = tk.Frame(sp, bg=PANEL)
+    s_toolbar.pack(fill="x", pady=(0, 10))
+
+    s_wrap = tk.Frame(sp, bg=PANEL)
+    s_wrap.pack(fill="both", expand=True)
+    s_cols = ("part", "cable", "stripes", "groups", "size", "taught", "status")
+    s_heads = {"part": ("PART NUMBER", 150, "w"), "cable": ("CABLE", 110, "center"),
+               "stripes": ("STRIPES", 200, "w"), "groups": ("GROUPS", 70, "center"),
+               "size": ("TAUGHT AT", 110, "center"), "taught": ("TAUGHT", 170, "center"),
+               "status": ("STATUS", 150, "w")}
+    stripe_tree = ttk.Treeview(s_wrap, columns=s_cols, show="headings", selectmode="browse")
+    s_sb = ttk.Scrollbar(s_wrap, orient="vertical", command=stripe_tree.yview)
+    stripe_tree.configure(yscrollcommand=s_sb.set)
+    s_sb.pack(side="right", fill="y")
+    stripe_tree.pack(fill="both", expand=True)
+    for c in s_cols:
+        text, width, anchor = s_heads[c]
+        stripe_tree.heading(c, text=text)
+        stripe_tree.column(c, width=width, anchor=anchor,
+                           stretch=(c in ("part", "stripes", "status")))
+    stripe_tree.tag_configure("ready", foreground=TXT)
+    stripe_tree.tag_configure("problem", foreground=WARN)
+    stripe_tree.tag_configure("empty", foreground=TXT_FAINT)
+
+    s_detail = tk.Frame(sp, bg=PANEL, height=34)
+    s_detail.pack(fill="x", pady=(8, 0))
+    s_detail.pack_propagate(False)
+    s_detail_lbl = tk.Label(s_detail, text="", bg=PANEL, fg=TXT_FAINT,
+                            font=(FONT, 11), anchor="w")
+    s_detail_lbl.pack(side="left", fill="x", expand=True)
+
+    rail2_scroll = ui.scrollable(body2)
+    rail2_scroll.configure(width=340)
+    rail2_scroll.grid(row=0, column=1, sticky="ns")
+    rail2_scroll.grid_propagate(False)
+    rail2 = rail2_scroll.body
+
+    # ── Right rail: camera 2 ───────────────────────────────────────────────
+    cam2_card = _card(rail2, "Camera 2", icon="camera")
+    cam2_card.pack(fill="x", padx=(0, 6))
+    c2b = cam2_card.body
+    cam2_device = _kv_row(c2b, "Device", "—", mono=True)
+    cam2_res = _kv_row(c2b, "Resolution", "—", mono=True)
+    cam2_state = _kv_row(c2b, "State", "Checking…", value_fg=TXT_DIM)
+    cam2_btns = tk.Frame(c2b, bg=PANEL)
+    cam2_btns.pack(fill="x", pady=(10, 0))
+    btn_cam2_cfg = _btn(cam2_btns, "Configure…", BTN_NEUTRAL, icon="gear")
+    btn_cam2_cfg.pack(side="left")
+    btn_cam2_check = _btn(cam2_btns, "Re-check", BTN_NEUTRAL, icon="refresh")
+    btn_cam2_check.pack(side="left", padx=(6, 0))
+
+    # ── Right rail: how it judges ──────────────────────────────────────────
+    how_card = _card(rail2, "How It Judges", icon="info")
+    how_card.pack(fill="x", padx=(0, 6), pady=(12, 0))
+    for line in ("Each group has a cable ROI along the cable and a stripes ROI inside it.",
+                 "A part passes when every group's cable colour, stripe count and stripe "
+                 "colours match the good part it was taught from.",
+                 "On the line it needs several steady camera frames that agree.",
+                 "NG: a wrong part. ERROR: a picture it can't judge reliably — blur, "
+                 "glare, something over the cable or light unlike when it was taught."):
+        tk.Label(how_card.body, text="•  " + line, bg=PANEL, fg=TXT_DIM, font=(FONT, 10),
+                 wraplength=265, justify="left", anchor="w").pack(fill="x", pady=(0, 6))
+
+    # ── Right rail: camera 2 on or off ─────────────────────────────────────
+    insp2_card = _card(rail2, "Inspection", icon="gear")
+    insp2_card.pack(fill="x", padx=(0, 6), pady=(12, 0))
+    i2b = insp2_card.body
+    # Before each camera had its own setting, one turned both on or off
+    cam2_on_var = tk.BooleanVar(
+        value=bool(v_cfg.get("cam2_enabled", v_cfg.get("vision_enabled", True))))
+    cam2_initial = {"on": cam2_on_var.get()}
+    ttk.Checkbutton(i2b, text="Camera 2 check enabled", variable=cam2_on_var).pack(fill="x")
+    tk.Label(i2b, text="Also in camera 2's setup on the Test console. When off, camera 2 "
+                       "doesn't check the stripes.",
+             bg=PANEL, fg=TXT_FAINT, font=(FONT, 10), anchor="w",
+             wraplength=265, justify="left").pack(fill="x", padx=(22, 0))
+    save2_row = tk.Frame(i2b, bg=PANEL)
+    save2_row.pack(fill="x", pady=(12, 0))
+    btn_save2 = _btn(save2_row, "Save Settings", BTN_PRIMARY, icon="check")
+    btn_save2.pack(side="right")
+    dirty2_lbl = tk.Label(save2_row, text="", bg=PANEL, fg=WARN, font=(FONT, 11, "bold"))
+    dirty2_lbl.pack(side="left")
+    tk.Frame(rail2, bg=BG, height=12).pack(fill="x")
+
+    def _on_cam2_setting(*_a):
+        changed = cam2_on_var.get() != cam2_initial["on"]
+        dirty2_lbl.config(text="Unsaved changes" if changed else "", fg=WARN)
+        _set_btn_enabled(btn_save2, changed)
+
+    def _save_cam2_setting():
+        cfg = load_vision_config()
+        cfg["cam2_enabled"] = cam2_on_var.get()
+        try:
+            save_vision_config(cfg)
+        except OSError as e:
+            messagebox.showerror("Vision Settings", "Could not save:\n\n%s" % e,
+                                 parent=parent)
+            return
+        v_cfg.update(cfg)
+        cam2_initial["on"] = cam2_on_var.get()
+        _set_btn_enabled(btn_save2, False)
+        dirty2_lbl.config(text="Saved", fg=OK_GREEN)
+        parent.after(1800, lambda: dirty2_lbl.config(text="", fg=WARN)
+                     if alive["page"] else None)
+
+    cam2_on_var.trace_add("write", _on_cam2_setting)
+    btn_save2.configure(command=_save_cam2_setting)
+    _on_cam2_setting()
+
+    def _paint_cam2(state_text, color):
+        if not alive["page"]:
+            return
+        cam2_state.config(text=state_text, fg=color)
+        cam_states[2] = (state_text, color)
+        _paint_tabs()
+
+    def _refresh_cam2():
+        cam = _load_cam_cfg(stripe_check.CAMERA_SOURCE)
+        idx, w, h = cam["index"], cam["width"], cam["height"]
+        configured = cam["enabled"]
+        cam2_device.config(text=("Camera %d" % idx) if configured else "Not configured",
+                           fg=TXT if configured else TXT_FAINT)
+        cam2_res.config(text="%d x %d" % (w, h) if configured else "—",
+                        fg=TXT if configured else TXT_FAINT)
+        if not _cv2_ok:
+            _paint_cam2("OpenCV missing", NG_RED)
+            return
+        if not configured:
+            _paint_cam2("No camera configured", WARN)
+            return
+        _paint_cam2("Checking camera…", TXT_DIM)
+
+        def _work():
+            try:
+                ok = cam_io.grab(idx, w, h, timeout=3.0) is not None
+            except Exception:
+                ok = False
+            text, color = (("Camera %d ready" % idx, OK_GREEN) if ok else
+                           ("Camera %d not responding" % idx, NG_RED))
+            try:
+                if alive["page"]:
+                    parent.after(0, lambda: _paint_cam2(text, color))
+            except Exception:
+                pass
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _stripe_status(model, cam):
+        """(status, tag, explanation) for one part's stripe check."""
+        size = model.get("frame_size")
+        if stripe_check.needs_reteach(model):
+            return ("Re-teach needed", "problem",
+                    "Taught with the earlier stripe check — re-teach it before it is "
+                    "used on the line.")
+        if cam["enabled"] and size and tuple(size) != (cam["width"], cam["height"]):
+            return ("Size differs", "problem",
+                    "Taught at %d x %d, but camera 2 is set to %d x %d — re-teach it, or "
+                    "set camera 2 back." % (size[0], size[1], cam["width"], cam["height"]))
+        return ("Ready", "ready",
+                "Run Test judges camera 2 exactly as the test cycle does.")
+
+    def _stripe_selection():
+        sel = stripe_tree.selection()
+        return sel[0] if sel and sel[0] != "!none" else None
+
+    def _on_stripe_select(event=None):
+        pno = _stripe_selection()
+        for b in (btn_s_reteach, btn_s_test, btn_s_del):
+            _set_btn_enabled(b, pno is not None)
+        if pno is None:
+            s_detail_lbl.config(text="", fg=TXT_FAINT)
+            return
+        _, tag, why = _stripe_status(stripe_check.load_model(pno) or {},
+                                     _load_cam_cfg(stripe_check.CAMERA_SOURCE))
+        s_detail_lbl.config(text=why, fg=WARN if tag == "problem" else TXT_FAINT)
+
+    def _refresh_stripes(select=None):
+        if not alive["page"]:
+            return
+        cam = _load_cam_cfg(stripe_check.CAMERA_SOURCE)
+        remembered = select or _stripe_selection()
+        stripe_tree.delete(*stripe_tree.get_children())
+        for pno in stripe_check.taught_parts():
+            model = stripe_check.load_model(pno) or {}
+            groups = stripe_check.groups_of(model)
+            status, tag, _ = _stripe_status(model, cam)
+            size = model.get("frame_size")
+            stripe_tree.insert("", "end", iid=pno, tags=(tag,), values=(
+                pno,
+                ", ".join(sorted({g.get("body_colour", "?") for g in groups})) or "—",
+                " + ".join("%s × %s" % (g.get("stripe_colour", "?"), g.get("stripe_count", "?"))
+                           for g in groups) or "—",
+                len(groups) or "—",
+                "%d x %d" % tuple(size) if size else "—",
+                str(model.get("created", "—")).replace("T", "  "),
+                status))
+        if not stripe_tree.get_children():
+            stripe_tree.insert("", "end", iid="!none", tags=("empty",),
+                               values=("—", "", "No parts taught yet", "", "", "",
+                                       "Start with “Teach New Part”"))
+        if remembered and stripe_tree.exists(remembered):
+            stripe_tree.selection_set(remembered)
+            stripe_tree.see(remembered)
+        _on_stripe_select()
+
+    def _stripe_teach(part_number=None):
+        saved = _open_stripe_teach(parent, part_number)
+        if saved:
+            _refresh_stripes(select=saved)
+
+    def _stripe_test():
+        pno = _stripe_selection()
+        if pno:
+            _open_stripe_test(parent, pno)
+
+    def _stripe_delete():
+        pno = _stripe_selection()
+        if not pno or not messagebox.askyesno(
+                "Delete Stripe Check",
+                "Delete the stripe check for part “%s”?\n\n"
+                "Camera 2 will no longer check this part on the line." % pno,
+                parent=parent):
+            return
+        stripe_check.delete_model(pno)
+        _refresh_stripes()
+
+    def _configure_cam2():
+        if _open_camera_dialog(parent, stripe_check.CAMERA_SOURCE,
+                               "Stripe Camera (Camera 2)"):
+            _refresh_cam2()
+            _refresh_stripes()
+
+    btn_s_teach = _btn(s_toolbar, "Teach New Part", BTN_SUCCESS, icon="box",
+                       command=lambda: _stripe_teach(None), pady=7)
+    btn_s_teach.pack(side="left")
+    btn_s_reteach = _btn(s_toolbar, "Re-teach", BTN_NEUTRAL, icon="refresh",
+                         command=lambda: _stripe_teach(_stripe_selection()), pady=7)
+    btn_s_reteach.pack(side="left", padx=(8, 0))
+    btn_s_test = _btn(s_toolbar, "Run Test", BTN_PRIMARY, icon="play",
+                      command=_stripe_test, pady=7)
+    btn_s_test.pack(side="left", padx=(8, 0))
+    btn_s_del = _btn(s_toolbar, "Delete", BTN_DANGER, icon="alert",
+                     command=_stripe_delete, pady=7)
+    btn_s_del.pack(side="left", padx=(8, 0))
+    btn_cam2_cfg.configure(command=_configure_cam2)
+    btn_cam2_check.configure(command=_refresh_cam2)
+    stripe_tree.bind("<<TreeviewSelect>>", _on_stripe_select)
+    stripe_tree.bind("<Double-1>", lambda e: _stripe_test())
+    stripe_tree.bind("<Delete>", lambda e: _stripe_delete())
+
     # ── Teardown ───────────────────────────────────────────────────────────
     def _on_destroy(event):
         if event.widget is content:
@@ -1397,9 +1627,11 @@ def render(parent):
 
     content.bind("<Destroy>", _on_destroy)
 
+    _show_tab(shown["tab"])
     _refresh_table()
     _refresh_camera()
     _refresh_stripes()
+    _refresh_cam2()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
