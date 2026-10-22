@@ -5,8 +5,8 @@ Vision Settings page.
 
 Teach, tune and verify the template-matching models that gate production.
 
-The page is a thin shell over vision_engine.vision_controller: it never matches
-or judges anything itself, so what an operator verifies here is exactly what the
+The page is a thin shell over the vision engine (vision_engine/part_inspection and
+vision_engine/stripes): it never matches or judges anything itself, so what an operator verifies here is exactly what the
 test cycle will do on the line.
 
 It is built like the other consoles - handed a window or a panel to fill - and
@@ -813,10 +813,8 @@ class VisionSettings:
 
 def render(parent):
     """Render the Vision Settings page."""
-    from vision_engine.vision_controller import (
-        VisionController, load_vision_config, save_vision_config,
-        DEFAULT_MATCH_THRESHOLD,
-    )
+    from vision_engine import VisionController, load_vision_config, save_vision_config
+    from vision_engine.config import DEFAULT_MATCH_THRESHOLD
 
     v_cfg = load_vision_config()
     ctrl = VisionController()
@@ -1033,7 +1031,7 @@ def render(parent):
     # ── Right rail: stripe check (camera 2) ────────────────────────────────
     # Camera 2 checks the painted stripes on the cable. It has its own device
     # and its own taught parts, kept apart from the template datasets above.
-    from vision_engine import stripe_check
+    from vision_engine.stripes import stripe_check
 
     stripe_card = _card(rail, "Stripe Check", "camera 2", icon="camera")
     stripe_card.pack(fill="x", padx=(0, 6), pady=(12, 0))
@@ -1469,7 +1467,8 @@ def _open_teach_wizard(parent, cam, part_number=None):
                              parent=parent)
         return None
 
-    from vision_engine.vision_controller import VisionController, DEFAULT_MATCH_THRESHOLD
+    from vision_engine import VisionController
+    from vision_engine.config import DEFAULT_MATCH_THRESHOLD
     from vision_engine import camera
 
     ctrl = VisionController()
@@ -2418,7 +2417,8 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
         messagebox.showerror("Camera", "OpenCV and Pillow are required.", parent=parent)
         return False
 
-    from vision_engine import camera, load_vision_config, save_vision_config, stripe_check
+    from vision_engine import camera, load_vision_config, save_vision_config
+    from vision_engine.stripes import stripe_check
 
     cam = _load_cam_cfg(source)
     # Camera 2 searches only the areas drawn on its preview
@@ -2871,7 +2871,8 @@ def _open_stripe_teach(parent, part_number=None):
                              parent=parent)
         return None
 
-    from vision_engine import camera, stripe_check
+    from vision_engine import camera
+    from vision_engine.stripes import stripe_check
 
     cam = _load_cam_cfg(stripe_check.CAMERA_SOURCE)
     existing_parts = set(stripe_check.taught_parts())
@@ -3527,7 +3528,7 @@ def _open_stripe_teach(parent, part_number=None):
 
 def _open_stripe_test(parent, part_number):
     """Run the production stripe check on camera 2, or on a still image."""
-    from vision_engine import stripe_check
+    from vision_engine.stripes import stripe_check
 
     win = _dialog(parent, "Stripe Test", 900, 660)
     _dialog_header(win, "Stripe Test — %s" % part_number,

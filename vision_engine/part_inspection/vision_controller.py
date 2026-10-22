@@ -1,6 +1,6 @@
 """
-vision_engine/vision_controller.py
-==================================
+vision_engine/part_inspection/vision_controller.py
+==================================================
 Webcam-based part verification using Template Matching (Normalized Cross-Correlation).
 
 Methodology:
@@ -13,10 +13,9 @@ Methodology:
     cv2.matchTemplate.
   - Result: if the best match score >= threshold the part is present and correct.
 
-Frames are enhanced (see enhance.py) before templates are cut from them, and
+Frames are enhanced (see vision_engine/enhance.py) before templates are cut from them, and
 live frames before they are searched, for parts taught that way.
 """
-import configparser
 import json
 import os
 import time
@@ -26,15 +25,12 @@ from typing import Dict, List, Optional, Tuple, Union
 import cv2
 import numpy as np
 
-from . import camera
-from .enhance import MODEL_KEY as ENHANCED, enhance, for_model
+from .. import camera
+from ..config import (DEFAULT_MATCH_THRESHOLD, ROOT_DIR, load_camera_config,
+                      load_vision_config, save_vision_config)
+from ..enhance import MODEL_KEY as ENHANCED, enhance, for_model
 
-DEFAULT_MATCH_THRESHOLD = 0.75
-
-_ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
-_VISION_CFG_PATH = os.path.join(_ROOT_DIR, "vision_config.json")
-_CAM_CFG_PATH = os.path.join(_ROOT_DIR, "camera_cfg.ini")
-_MODELS_DIR = os.path.join(_ROOT_DIR, "vision_models")
+_MODELS_DIR = os.path.join(ROOT_DIR, "vision_models")
 
 
 @dataclass
@@ -53,64 +49,6 @@ class VisionResult:
     # number, without duplicating the matching logic outside inspect().
     match_box: Optional[Tuple[int, int, int, int]] = None   # (x, y, w, h) in frame
     frame: Optional[np.ndarray] = None                      # frame that was judged
-
-
-def _default_config() -> dict:
-    return {
-        "vision_enabled": True,
-        "camera_source": "cam1",
-        "match_threshold": DEFAULT_MATCH_THRESHOLD,
-        "part_mapping": {},
-    }
-
-
-def load_vision_config() -> dict:
-    cfg = _default_config()
-    if os.path.exists(_VISION_CFG_PATH):
-        try:
-            with open(_VISION_CFG_PATH, "r") as f:
-                cfg.update(json.load(f))
-        except (OSError, ValueError):
-            pass
-    return cfg
-
-
-def save_vision_config(cfg: dict):
-    with open(_VISION_CFG_PATH, "w") as f:
-        json.dump(cfg, f, indent=4)
-        f.write("\n")
-
-
-def load_camera_config(source: str) -> Tuple[int, int, int]:
-    """(index, width, height) saved for a camera source such as "cam1".
-
-    An index of -1 means no device has been chosen for that source yet.
-    """
-    cfg = configparser.ConfigParser()
-    if os.path.exists(_CAM_CFG_PATH):
-        cfg.read(_CAM_CFG_PATH)
-    return (
-        cfg.getint("CAMERA", f"{source}_index", fallback=-1),
-        cfg.getint("CAMERA", f"{source}_width", fallback=640),
-        cfg.getint("CAMERA", f"{source}_height", fallback=480),
-    )
-
-
-def save_camera_config(source: str, index: int, width: int, height: int):
-    """Store the device and resolution for one camera source.
-
-    Other sources already in the file are kept as they are.
-    """
-    cfg = configparser.ConfigParser()
-    if os.path.exists(_CAM_CFG_PATH):
-        cfg.read(_CAM_CFG_PATH)
-    if not cfg.has_section("CAMERA"):
-        cfg.add_section("CAMERA")
-    cfg.set("CAMERA", f"{source}_index", str(int(index)))
-    cfg.set("CAMERA", f"{source}_width", str(int(width)))
-    cfg.set("CAMERA", f"{source}_height", str(int(height)))
-    with open(_CAM_CFG_PATH, "w") as f:
-        cfg.write(f)
 
 
 def get_vision_controller() -> "VisionController":

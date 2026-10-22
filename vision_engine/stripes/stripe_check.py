@@ -1,6 +1,6 @@
 """
-vision_engine/stripe_check.py
-=============================
+vision_engine/stripes/stripe_check.py
+=====================================
 Checks the painted stripes on a cable with the second camera ("cam2").
 
 Each part number has one or more groups of painted bands round its cable,
@@ -31,7 +31,7 @@ Parts taught before stripes were read along the cable are still judged the
 old way, by pixels of their colour anywhere in the search region, until they
 are re-taught.
 
-Frames are enhanced (see enhance.py) before stripes are read from them, both
+Frames are enhanced (see vision_engine/enhance.py) before stripes are read from them, both
 when teaching and, for parts taught that way, when inspecting.
 """
 import json
@@ -45,17 +45,16 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from . import camera
-from .enhance import MODEL_KEY as ENHANCED, enhance, for_model
-from .vision_controller import load_camera_config, load_vision_config, save_vision_config
+from .. import camera
+from ..config import ROOT_DIR, load_camera_config, load_vision_config, save_vision_config
+from ..enhance import MODEL_KEY as ENHANCED, enhance, for_model
 
 CAMERA_SOURCE = "cam2"
 
 # vision_config.json key holding the part of camera 2's frame that is searched
 ROI_KEY = "cam2_roi"
 
-_ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
-_MODELS_DIR = os.path.join(_ROOT_DIR, "vision_models", "stripes")
+_MODELS_DIR = os.path.join(ROOT_DIR, "vision_models", "stripes")
 
 # Colours with a look of their own (see colour_masks)
 MASK_COLOURS = ("white", "red", "yellow", "green", "blue", "purple")

@@ -29,7 +29,8 @@ from plc_address import bit_address
 try:
     import cv2
     import numpy as np
-    from vision_engine import camera, captures, stripe_check
+    from vision_engine import camera, captures
+    from vision_engine.stripes import stripe_check
     from vision_engine import (VisionController, load_camera_config, load_vision_config,
                                save_vision_config)
 except ImportError:
