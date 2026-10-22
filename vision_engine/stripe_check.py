@@ -76,6 +76,10 @@ CABLE_CONTRAST_SHARE = 0.35
 # ... and colourless: a coloured mark on the cable is not a white stripe
 MAX_CABLE_WHITE_SATURATION = 60
 
+# Light yellow paint is this saturated, against about 30 for the named
+# colour and under 20 for white paint (see colour_masks)
+PALE_YELLOW_SATURATION = 25
+
 # Bands belong to one group while each is within this many stripe pitches
 # of another
 GROUP_LINK = 1.6
@@ -135,10 +139,12 @@ def colour_masks(bgr: np.ndarray) -> dict:
     vivid = ((s > 90) & (v > 45)) | shine
     # Purple and green paint is less saturated than the rest
     pale = ((s > 55) & (v > 45)) | shine
+    # Light yellow paint is barely tinted, but bright: it is yellow, not white
+    yellow = (h >= 18) & (h <= 38) & (vivid | ((s >= PALE_YELLOW_SATURATION) & (v > 185)))
     masks = {
-        "white": (s < 55) & (v > 185),
+        "white": (s < 55) & (v > 185) & ~yellow,
         "red": vivid & ((h < 9) | (h > 165)),
-        "yellow": vivid & (h >= 18) & (h <= 38),
+        "yellow": yellow,
         "green": pale & (h >= 40) & (h <= 88),
         "blue": vivid & (h >= 95) & (h <= 128),
         "purple": pale & (h >= 129) & (h <= 165),
