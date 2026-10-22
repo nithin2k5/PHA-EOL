@@ -1971,13 +1971,13 @@ class EOLTesterGUI:
 
     CAMERA_NG_POPUP_MS = 4000
     CAMERA_NG_IMAGE_WIDTH = 480
-    # Camera 2's cable boxes and stripes, by their group's verdict (BGR)
+    # Camera 2's cable ROIs and stripes, by their group's verdict (BGR)
     REGION_INK = {True: (0, 160, 0), False: (0, 0, 255)}
 
     def with_stripe_regions(self, result):
         """A copy of camera 2's judged frame with each stripe group drawn on it.
 
-        Each group's cable box is drawn and its stripes outlined, green if
+        Each group's cable ROI is drawn and its stripes outlined, green if
         that group passed and red if not, so a picture shows which group
         failed.
         """
@@ -1992,7 +1992,7 @@ class EOLTesterGUI:
             if group.region:
                 x, y, w, h = group.region
                 cv2.rectangle(img, (x, y), (x + w, y + h), ink, thick)
-                label = f"GROUP {n}" if several else "CABLE"
+                label = f"GROUP {n}" if several else "CABLE ROI"
                 cv2.putText(img, label, (x + 4, max(y - 8, 18)),
                             cv2.FONT_HERSHEY_SIMPLEX, scale, ink, thick)
         return img

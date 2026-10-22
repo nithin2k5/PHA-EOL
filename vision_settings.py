@@ -2705,7 +2705,7 @@ def _open_stripe_teach(parent, part_number=None):
     _dialog_header(
         win,
         "Re-teach stripes — “%s”" % part_number if reteach else "Teach Stripes",
-        "Capture a good part on camera 2, then box each group of stripes and the cable round it.")
+        "Capture a good part on camera 2, then draw each group's cable ROI and stripes ROI.")
 
     alive = {"v": True}
     live = {"on": False}
@@ -2714,18 +2714,19 @@ def _open_stripe_teach(parent, part_number=None):
     state = {"frame": None, "label": "", "loading": False}
 
     def _new_group(roi=None, area=None, body=None, colour=None, count=None):
-        # "roi" is the box round the stripes and "area" the longer one round
-        # the cable; "body", "colour" and "count" are what the check will
-        # expect, kept when a box is redrawn; "model" and "outlines" are what
-        # was read from the boxes
+        # "area" is the cable ROI and "roi" the stripes ROI inside it;
+        # "body", "colour" and "count" are what the check will expect, kept
+        # when an ROI is redrawn; "model" and "outlines" are what was read
+        # from the ROIs
         return {"roi": roi, "area": area, "body": body, "colour": colour,
                 "count": count, "model": None, "outlines": [], "error": None}
 
     groups = [_new_group()]
     # The group being filled in, or None when none is
     active = {"i": 0}
-    # What dragging on the picture draws for that group: "box" or "area"
-    draw = {"mode": "box"}
+    # What dragging on the picture draws for that group: "area" (the cable
+    # ROI) or "box" (the stripes ROI)
+    draw = {"mode": "area"}
     result = {"saved": None}
 
     foot_in = _dialog_footer(win)
@@ -2849,17 +2850,17 @@ def _open_stripe_teach(parent, part_number=None):
         tk.Label(editor, text=text, bg=BG, fg=TXT, font=(FONT, 11, "bold"),
                  anchor="w").pack(fill="x", pady=(8, 2))
 
-    _sub_head("A   Box its stripes")
-    box_note = _note(editor, "")
-    btn_box = _btn(editor, "Redraw Stripe Box", BTN_NEUTRAL, pady=3,
-                   command=lambda: _set_mode("box"))
-    btn_box.pack(anchor="w", pady=(4, 0))
-
-    _sub_head("B   Box the cable round them")
+    _sub_head("A   Cable ROI")
     area_note = _note(editor, "")
-    btn_area = _btn(editor, "Redraw Cable Box", BTN_NEUTRAL, pady=3,
+    btn_area = _btn(editor, "Redraw Cable ROI", BTN_NEUTRAL, pady=3,
                     command=lambda: _set_mode("area"))
     btn_area.pack(anchor="w", pady=(4, 0))
+
+    _sub_head("B   Stripes ROI")
+    box_note = _note(editor, "")
+    btn_box = _btn(editor, "Redraw Stripes ROI", BTN_NEUTRAL, pady=3,
+                   command=lambda: _set_mode("box"))
+    btn_box.pack(anchor="w", pady=(4, 0))
 
     _sub_head("C   What the check expects")
     found_lbl = tk.Label(editor, text="—", bg=BG, fg=TXT_DIM, font=(FONT, 18, "bold"),
@@ -2915,10 +2916,10 @@ def _open_stripe_teach(parent, part_number=None):
 
     def _status(g):
         """(text, colour) saying how far a group has got."""
-        if g["roi"] is None:
-            return "stripes not boxed yet", WARN
         if g["area"] is None:
-            return "cable not boxed yet", WARN
+            return "cable ROI not drawn yet", WARN
+        if g["roi"] is None:
+            return "stripes ROI not drawn yet", WARN
         if g["model"] is None:
             return g["error"] or "no stripes read", WARN
         if not _ready(g):
@@ -2935,7 +2936,7 @@ def _open_stripe_teach(parent, part_number=None):
         return {
             "Part number": bool(ent_pno.get().strip()),
             "Good part": state["frame"] is not None,
-            "Boxes": all(g["roi"] is not None and g["area"] is not None for g in groups),
+            "ROIs": all(g["roi"] is not None and g["area"] is not None for g in groups),
             "Groups ready": all(_ready(g) for g in groups),
         }
 
@@ -2996,22 +2997,23 @@ def _open_stripe_teach(parent, part_number=None):
         editor.pack(fill="x")
         s4_title.config(text="Group %d" % (active["i"] + 1))
 
-        if g["roi"] is None:
-            box_note.config(text="Drag a box round this group's stripes on the picture, "
-                                 "with a little cable either side.", fg=TXT_FAINT)
-        else:
-            box_note.config(text="Stripe box %d × %d px. Drag its edges on the picture "
-                                 "to adjust it." % (g["roi"]["width"], g["roi"]["height"]),
-                            fg=TXT_FAINT)
         if g["area"] is None:
-            area_note.config(text="A longer box round the cable at the stripes, with some "
-                                  "of the bench above and below it. The cable must run "
-                                  "along its long side.", fg=TXT_FAINT)
+            area_note.config(text="Drag a box along the cable where this group's stripes "
+                                  "are, with some of the bench above and below it. The "
+                                  "cable must run along its long side.", fg=TXT_FAINT)
         else:
-            area_note.config(text="Cable box %d × %d px. Only the cable inside it is "
-                                  "looked at; it must contain the stripe box."
+            area_note.config(text="Cable ROI %d × %d px. Only the cable inside it is "
+                                  "looked at. Drag its edges on the picture to adjust it."
                                   % (g["area"]["width"], g["area"]["height"]),
                              fg=TXT_FAINT)
+        if g["roi"] is None:
+            box_note.config(text="Inside the cable ROI, drag a box round this group's "
+                                 "stripes, with a little cable either side.", fg=TXT_FAINT)
+        else:
+            box_note.config(text="Stripes ROI %d × %d px. Only stripes inside it count. "
+                                 "Drag its edges on the picture to adjust it."
+                                 % (g["roi"]["width"], g["roi"]["height"]),
+                            fg=TXT_FAINT)
 
         model = g["model"]
         state["loading"] = True
@@ -3033,8 +3035,8 @@ def _open_stripe_teach(parent, part_number=None):
         state["loading"] = False
         _check_count()
 
-        _set_btn_enabled(btn_box, draw["mode"] != "box")
-        _set_btn_enabled(btn_area, g["roi"] is not None and draw["mode"] != "area")
+        _set_btn_enabled(btn_area, draw["mode"] != "area")
+        _set_btn_enabled(btn_box, g["area"] is not None and draw["mode"] != "box")
         _set_btn_enabled(btn_done, _ready(g))
 
     def _paint_banner():
@@ -3049,23 +3051,23 @@ def _open_stripe_teach(parent, part_number=None):
                 text, fill = "Every group is ready — press Save", ui.SUCCESS_SOFT
             else:
                 text, fill = "Click Edit on the group that isn't ready", ui.ROW_BAND
-        elif draw["mode"] == "box" and g["roi"] is None:
-            text, fill = "GROUP %d — drag a box round its stripes" % n, ui.ROW_BAND
         elif draw["mode"] == "area" and g["area"] is None:
-            text, fill = "GROUP %d — drag a box round the cable at its stripes" % n, ui.ROW_BAND
+            text, fill = "GROUP %d — draw the cable ROI along the cable" % n, ui.ROW_BAND
+        elif draw["mode"] == "box" and g["roi"] is None:
+            text, fill = "GROUP %d — draw the stripes ROI round its stripes" % n, ui.ROW_BAND
         elif g["model"] is None:
             text, fill = "GROUP %d — %s" % (n, g["error"] or "no stripes found"), ui.DANGER_SOFT
         elif not _ready(g):
             text, fill = "GROUP %d — %d stripes found, %s expected" % (
                 n, g["model"]["count"], g["count"]), ui.DANGER_SOFT
         else:
-            text, fill = ("GROUP %d — %s found. Press Done, or adjust the %s box."
-                          % (n, _what(g), "stripe" if draw["mode"] == "box" else "cable"),
+            text, fill = ("GROUP %d — %s found. Press Done, or adjust the %s ROI."
+                          % (n, _what(g), "stripes" if draw["mode"] == "box" else "cable"),
                           ui.SUCCESS_SOFT)
         banner.config(text=text, bg=fill)
 
     def _show_frame():
-        """The taught frame: the box being drawn, everything else dashed and
+        """The taught frame: the ROI being drawn, everything else dashed and
         labelled, and every group's stripes outlined."""
         if state["frame"] is None or live["on"]:
             return
@@ -3077,26 +3079,16 @@ def _open_stripe_teach(parent, part_number=None):
         view.set_roi(g[editing_key] if g is not None else None, notify=False)
         frames = []
         for n, other in enumerate(groups, start=1):
-            for key, ink, name in (("roi", BOX_INK, "stripes"), ("area", AREA_INK, "cable")):
+            for key, ink, name in (("area", AREA_INK, "cable ROI"),
+                                   ("roi", BOX_INK, "stripes ROI")):
                 if other[key] and not (other is g and key == editing_key):
                     frames.append((other[key], ink, "G%d %s" % (n, name)))
         view.set_frames(frames)
         view.set_outlines([o for other in groups for o in other["outlines"]])
         view.set_hint("Scroll to zoom  ·  right-drag to move")
 
-    def _suggest_area(roi):
-        """A first cable box round a stripe box, for the operator to adjust:
-        three times its size each way, within the frame."""
-        fh, fw = state["frame"].shape[:2]
-        cx = roi["x"] + roi["width"] / 2.0
-        cy = roi["y"] + roi["height"] / 2.0
-        x0, y0 = max(0, int(cx - 1.5 * roi["width"])), max(0, int(cy - 1.5 * roi["height"]))
-        x1 = min(fw, int(cx + 1.5 * roi["width"]))
-        y1 = min(fh, int(cy + 1.5 * roi["height"]))
-        return {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0}
-
     def _analyse(g):
-        """Read the group inside its boxes, as saving would."""
+        """Read the group inside its ROIs, as saving would."""
         g["model"], g["outlines"], g["error"] = None, [], None
         if state["frame"] is None or g["roi"] is None or g["area"] is None:
             return
@@ -3133,7 +3125,7 @@ def _open_stripe_teach(parent, part_number=None):
         if model is not None and n is not None and n != model["count"]:
             count_note.config(
                 text="%d were found, but the check would expect %d, so every good part "
-                     "would fail. Check the boxes and the lighting; stripes that touch "
+                     "would fail. Check the ROIs and the lighting; stripes that touch "
                      "can't be told apart." % (model["count"], n),
                 fg=WARN)
         else:
@@ -3145,11 +3137,10 @@ def _open_stripe_teach(parent, part_number=None):
             return
         g["roi" if draw["mode"] == "box" else "area"] = roi
         if final:
-            # Boxed the stripes: offer a cable box round them, to adjust
-            if draw["mode"] == "box" and roi is not None and g["area"] is None:
-                g["area"] = _suggest_area(roi)
-                draw["mode"] = "area"
-            # Counted afresh from the new boxes
+            # Cable ROI drawn: on to the stripes ROI inside it
+            if draw["mode"] == "area" and roi is not None and g["roi"] is None:
+                draw["mode"] = "box"
+            # Counted afresh from the new ROIs
             g["count"] = None
             _analyse(g)
             _refresh_all()
@@ -3173,16 +3164,20 @@ def _open_stripe_teach(parent, part_number=None):
                 return i
         return None
 
+    def _start_mode(g):
+        """The cable ROI first, then the stripes ROI."""
+        return "area" if g is None or g["area"] is None else "box"
+
     def _edit_group(i):
         active["i"] = i
-        draw["mode"] = "box"
+        draw["mode"] = _start_mode(groups[i])
         _refresh_all()
         # The group's controls, not the steps already done
         _scroll_to(s4)
 
     def _done_group():
         active["i"] = _first_unready()
-        draw["mode"] = "box"
+        draw["mode"] = _start_mode(_group())
         _refresh_all()
         # Back to the list of groups, with Add Group and the next to do
         _scroll_to(s3 if active["i"] is None else s4)
@@ -3251,10 +3246,10 @@ def _open_stripe_teach(parent, part_number=None):
             reloaded = True
         for g in groups:
             _analyse(g)
-        # A re-teach opens on group 1, so its box can be checked against the
+        # A re-teach opens on group 1, so its ROIs can be checked against the
         # new picture; otherwise straight on to the first group still to do
         active["i"] = 0 if reloaded else _first_unready()
-        draw["mode"] = "box"
+        draw["mode"] = _start_mode(_group())
         view.set_image(img, keep_roi=False)
         short = label if len(label) <= 24 else label[:21] + "…"
         frame_lbl.config(text="%s  ·  %d x %d" % (short, img.shape[1], img.shape[0]))
@@ -3509,7 +3504,7 @@ def _open_stripe_test(parent, part_number):
             view.set_outlines(result.stripe_boxes)
             view.set_accent(color)
             view.set_roi(None, notify=False)
-            # Each group's cable box, in its own verdict's colour
+            # Each group's cable ROI, in its own verdict's colour
             several = len(result.groups) > 1
             view.set_frames([
                 ({"x": g.region[0], "y": g.region[1], "width": g.region[2],
@@ -3517,7 +3512,7 @@ def _open_stripe_test(parent, part_number):
                  OK_GREEN if g.ok else NG_RED,
                  ("G%d " % n if several else "") + g.seen.replace(" x", " × "))
                 for n, g in enumerate(result.groups, start=1) if g.region])
-            view.set_hint("Each group was judged in its own cable box")
+            view.set_hint("Each group was judged in its own cable ROI")
         else:
             view.set_frames([])
             view.set_image(None)

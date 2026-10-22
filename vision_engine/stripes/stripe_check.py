@@ -13,15 +13,15 @@ this module keeps each part's groups and turns the engine's verdicts into the
 OK / NG / ERROR the test console shows.
 
 Methodology:
-  - Teach: on a good part, the operator draws two boxes for each group: one
-    round its stripes, with a little cable either side, and a longer one round
-    the cable there, with some of the bench above and below it. The engine
-    finds the cable's edges in the cable box, and the stripes across it in the
-    stripe box, and the body and stripe colours of the good part are taught
-    from what it sees.
-  - Inspect: each group is judged on its own two boxes. The cable may sit a
+  - Teach: on a good part, the operator draws two ROIs for each group: the
+    cable ROI, along the cable where the stripes are with some of the bench
+    above and below it, then the stripes ROI inside it, round the stripes
+    with a little cable either side. The engine finds the cable's edges in
+    the cable ROI and the stripes across it in the stripes ROI, and the body
+    and stripe colours of the good part are taught from what it sees.
+  - Inspect: each group is judged in its own two ROIs. The cable may sit a
     little higher or lower, or lie a few degrees off, but must run along the
-    long side of its cable box.
+    long side of its cable ROI.
   - Result: OK if every group passes. A group whose colours, count or cable
     are wrong is NG; one the engine cannot judge reliably (blur, glare,
     something over the cable, light unlike the teach) is an ERROR.
@@ -63,8 +63,8 @@ ENGINE = "marker_engine"
 _PRESETS = PresetStore(os.path.join(ROOT_DIR, "vision_models", "colour_presets.json"))
 COLOURS = tuple(_PRESETS.names())
 
-# The smallest boxes the engine can work in (see marker_engine/detection.py):
-# the cable box's long and short sides, and the stripe box's sides
+# The smallest ROIs the engine can work in (see marker_engine/detection.py):
+# the cable ROI's long and short sides, and the stripes ROI's sides
 MIN_CABLE_BOX = (20, 12)
 MIN_STRIPE_BOX = 8
 
@@ -77,7 +77,7 @@ class GroupResult:
     expected: int                   # stripes taught
     count: int = 0                  # stripes found
     seen: str = ""                  # e.g. "red x3"
-    # The cable box the group was judged in, (x, y, w, h)
+    # The cable ROI the group was judged in, (x, y, w, h)
     region: Optional[Tuple[int, int, int, int]] = None
     stripe_boxes: List[np.ndarray] = field(default_factory=list)
     status: str = ""                # the engine's verdict, e.g. "FAIL"
@@ -221,7 +221,7 @@ def _contains(outer, inner) -> bool:
 
 
 # The engine looks for a cable running across its box, give or take a few
-# degrees. A cable box taller than it is wide holds an upright cable, so the
+# degrees. A cable ROI taller than it is wide holds an upright cable, so the
 # frame is turned a quarter clockwise for it, and what is found turned back.
 
 def _upright(recipe: Recipe) -> bool:
@@ -280,17 +280,17 @@ def _recipe(name: str, frame: np.ndarray, group: dict) -> Recipe:
 
 
 def _check_boxes(box: Optional[dict], area: Optional[dict]):
-    if box is None:
-        raise ValueError("Draw a box round the stripes.")
     if area is None:
-        raise ValueError("Draw a box round the cable.")
-    if box["width"] < MIN_STRIPE_BOX or box["height"] < MIN_STRIPE_BOX:
-        raise ValueError("The stripe box is too small. Draw it round the whole stripe group.")
+        raise ValueError("Draw the cable ROI.")
+    if box is None:
+        raise ValueError("Draw the stripes ROI.")
     if max(area["width"], area["height"]) < MIN_CABLE_BOX[0] or \
             min(area["width"], area["height"]) < MIN_CABLE_BOX[1]:
-        raise ValueError("The cable box is too small.")
+        raise ValueError("The cable ROI is too small.")
+    if box["width"] < MIN_STRIPE_BOX or box["height"] < MIN_STRIPE_BOX:
+        raise ValueError("The stripes ROI is too small. Draw it round the whole stripe group.")
     if not _contains(_rect(area), _rect(box)):
-        raise ValueError("The stripe box must lie inside the cable box.")
+        raise ValueError("The stripes ROI must lie inside the cable ROI.")
 
 
 def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
@@ -298,8 +298,7 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
                count: Optional[int] = None) -> Tuple[dict, List[np.ndarray]]:
     """What the engine sees of one group on a good part, without saving it.
 
-    `roi` is the box round the stripes and `area` the longer one round the
-    cable. Returns what was read, with "body" and "colour" named from the
+    `roi` is the stripes ROI and `area` the cable ROI round it. Returns what was read, with "body" and "colour" named from the
     engine's colours unless given, "count", "stripe_width" and "span", and the
     outline of each stripe in frame coordinates. With `count`, that many
     stripes must be found. Raises ValueError with an operator-readable reason
@@ -313,14 +312,14 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
     except SetupError as e:
         raise ValueError(str(e).capitalize() + ".")
     if m.presence != PRESENT:
-        raise ValueError("No cable found in the cable box. Draw it round the cable, "
+        raise ValueError("No cable found in the cable ROI. Draw it along the cable, "
                          "with some of the bench above and below it.")
     if m.issues:
         raise ValueError(m.issues[0][0].upper() + m.issues[0][1:] + ".")
     if not m.stripes:
-        raise ValueError("No stripes found in the stripe box.")
+        raise ValueError("No stripes found in the stripes ROI.")
     if count is not None and len(m.stripes) != count:
-        raise ValueError("%d stripes found, but %d are expected. Check the boxes and the "
+        raise ValueError("%d stripes found, but %d are expected. Check the ROIs and the "
                          "lighting; stripes that touch can't be told apart."
                          % (len(m.stripes), count))
     refs = _PRESETS.all()
@@ -338,8 +337,8 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
 def teach(part_number: str, frame: np.ndarray, groups: List[dict]) -> dict:
     """Teach each stripe group of a good part and save them for the part.
 
-    `groups` lists one dict per group: "roi", the box round its stripes,
-    "area", the box round the cable, and "body", "colour" and "count", as
+    `groups` lists one dict per group: "area", its cable ROI, "roi", its
+    stripes ROI, and "body", "colour" and "count", as
     read_group() gives or the operator corrected them. Raises ValueError,
     naming the group, if one can't be taught.
     """
@@ -361,7 +360,7 @@ def teach(part_number: str, frame: np.ndarray, groups: List[dict]) -> dict:
             session.build(turned)
         except ValueError as e:
             raise ValueError(f"Group {n}: {e}")
-        # Taught on the turned frame; the boxes are kept as drawn
+        # Taught on the turned frame; the ROIs are kept as drawn
         turned.roi, turned.inspection_region = recipe.roi, recipe.inspection_region
         turned.image_size = recipe.image_size
         recipes.append(turned.to_dict())
@@ -379,7 +378,7 @@ def teach(part_number: str, frame: np.ndarray, groups: List[dict]) -> dict:
 # ── Inspection ──────────────────────────────────────────────────────────────
 
 def _inspect_group(frame: np.ndarray, recipe: Recipe) -> GroupResult:
-    """Judge one taught group in its own boxes."""
+    """Judge one taught group in its own ROIs."""
     result = GroupResult(ok=False, colour=recipe.stripe_colour,
                          expected=recipe.stripe_count, region=tuple(recipe.roi))
     turned_frame, turned = _turn(frame, recipe)
