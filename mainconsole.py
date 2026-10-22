@@ -1,8 +1,14 @@
+import os
+
+# Before OpenCV is first loaded: Media Foundation then converts camera frames
+# without the graphics card, which opens a camera in a fraction of a second
+# rather than about three (see vision_engine/camera.py)
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
+
 import tkinter as tk
 from tkinter import ttk, messagebox
 import configparser
 import csv
-import os
 import time
 from datetime import datetime
 

@@ -68,8 +68,6 @@ _BUTTON_COLOURS = {
 
 _MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vision_models")
 
-RESOLUTIONS = [(320, 240), (640, 480), (800, 600), (1280, 720), (1920, 1080)]
-
 
 # ── Camera config (same file and keys the vision engine reads) ─────────────────
 
@@ -92,33 +90,31 @@ def _save_cam_cfg(index: int, width: int, height: int, enabled: bool, source=Non
 
 
 def _probe_cameras(max_index: int = 6):
-    """Indices that open *and* deliver a frame, with their native resolution.
+    """Indices that open *and* deliver a frame, with the sizes they deliver.
 
     A device that opens but never yields a frame is worse than no device at all —
     it looks configured and then fails mid-cycle — so opening is not enough to
-    call a camera present.
+    call a camera present. Each has "sizes", smallest first, and "width" and
+    "height", its largest.
     """
     found = []
     if not _cv2_ok:
         return found
+    from vision_engine import camera
     for i in range(max_index):
-        cap = None
         try:
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                ret, _ = cap.read()
-                if ret:
-                    found.append({
-                        "index": i,
-                        "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640,
-                        "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480,
-                    })
+            cam = camera.probe(i)
         except Exception:
-            pass
-        finally:
-            if cap is not None:
-                cap.release()
+            cam = None
+        if cam:
+            cam["width"], cam["height"] = max(cam["sizes"], key=lambda s: s[0] * s[1])
+            found.append(cam)
     return found
+
+
+def _cam_label(cam: dict) -> str:
+    """How a found camera reads in the list of devices."""
+    return "Camera %d  (up to %dx%d)" % (cam["index"], cam["width"], cam["height"])
 
 
 def _read_image(path):
@@ -2532,8 +2528,9 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     tk.Label(cb_body, text="Resolution", bg=PANEL, fg=TXT_DIM, font=(FONT, 11),
              anchor="w").pack(fill="x")
     res_var = tk.StringVar()
+    # The sizes the chosen camera delivers, once the scan has found them
     cmb_res = ttk.Combobox(cb_body, textvariable=res_var, state="readonly",
-                           values=["%dx%d" % r for r in RESOLUTIONS],
+                           values=["%dx%d" % (cam["width"], cam["height"])],
                            font=(FONT, 11))
     cmb_res.pack(fill="x", pady=(3, 10))
     res_var.set("%dx%d" % (cam["width"], cam["height"]))
@@ -2689,9 +2686,29 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     def _selected_index():
         label = dev_var.get()
         for c in found["cams"]:
-            if label == "Camera %d  (%dx%d)" % (c["index"], c["width"], c["height"]):
+            if label == _cam_label(c):
                 return c["index"]
         return -1
+
+    def _fit_sizes():
+        """Offer the chosen camera's own sizes. The camera already set up
+        keeps its size, as its parts were taught at it; another starts at
+        its largest, for the sharpest picture."""
+        idx = _selected_index()
+        c = next((c for c in found["cams"] if c["index"] == idx), None)
+        if c is None:
+            return
+        sizes = ["%dx%d" % s for s in c["sizes"]]
+        saved = "%dx%d" % (cam["width"], cam["height"])
+        cmb_res.config(values=sizes)
+        if idx == cam["index"] and cam["enabled"] and saved in sizes:
+            res_var.set(saved)
+        else:
+            res_var.set("%dx%d" % (c["width"], c["height"]))
+
+    def _on_device_pick(*_a):
+        _fit_sizes()
+        _on_res_change()
 
     def _on_device_change(*_a):
         idx = _selected_index()
@@ -2715,7 +2732,7 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
             target_var.set(0)
         _paint_areas()
 
-    cmb_dev.bind("<<ComboboxSelected>>", _on_device_change)
+    cmb_dev.bind("<<ComboboxSelected>>", _on_device_pick)
     cmb_res.bind("<<ComboboxSelected>>", _on_res_change)
 
     def _scan():
@@ -2733,9 +2750,7 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
                 if not alive["v"]:
                     return
                 found["cams"] = cams
-                labels = [DISABLED] + ["Camera %d  (%dx%d)"
-                                       % (c["index"], c["width"], c["height"])
-                                       for c in cams]
+                labels = [DISABLED] + [_cam_label(c) for c in cams]
                 cmb_dev.config(values=labels, state="readonly")
                 pick = DISABLED
                 for lab, c in zip(labels[1:], cams):
@@ -2749,7 +2764,7 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
                     status.config(text="Nothing responded on indexes 0–5.", fg=NG_RED)
                 else:
                     status.config(text="%d camera(s) detected." % len(cams), fg=TXT_DIM)
-                _on_device_change()
+                _on_device_pick()
 
             try:
                 win.after(0, _apply)

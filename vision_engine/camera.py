@@ -3,10 +3,15 @@ vision_engine/camera.py
 =======================
 Single owner per physical camera device.
 
-A DirectShow device accepts only one cv2.VideoCapture at a time, so the live
+A camera device accepts only one cv2.VideoCapture at a time, so the live
 preview and the inspection path must share one stream rather than each opening
 the device. Consumers acquire a reference-counted stream by index; the device is
 opened on the first acquire and released when the last reference goes away.
+
+Cameras are opened through Media Foundation, as the Windows Camera app opens
+them: on the same camera it delivers twice DirectShow's frame rate at 1280x720,
+so a moving part blurs less. DirectShow is kept for a device Media Foundation
+can't open.
 """
 import threading
 import time
@@ -20,6 +25,67 @@ _STREAMS: dict = {}
 
 # ~1s of failed reads at the 20ms retry interval.
 _MAX_CONSECUTIVE_READ_FAILURES = 50
+
+# Tried in this order (see the module docstring)
+_BACKENDS = (cv2.CAP_MSMF, cv2.CAP_DSHOW)
+
+# Frame sizes a camera may offer; probe() finds which it really delivers
+SIZES = [(320, 240), (640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960),
+         (1600, 1200), (1920, 1080), (2560, 1440), (3840, 2160)]
+
+
+def open_capture(index: int, width: int = 0, height: int = 0):
+    """An opened cv2.VideoCapture for `index`, asked for this frame size, or
+    None if no backend opens the device."""
+    for api in _BACKENDS:
+        cap = cv2.VideoCapture(index, api)
+        if not cap.isOpened():
+            cap.release()
+            continue
+        if api == cv2.CAP_DSHOW:
+            # DirectShow sends uncompressed frames unless told otherwise, and
+            # many cameras send only small ones uncompressed over USB
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        if width and height:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        return cap
+    return None
+
+
+def probe(index: int) -> Optional[dict]:
+    """What a camera delivers: {"index", "sizes"}, the SIZES it gives frames
+    at, smallest first. None if it gives no frame at all.
+
+    A camera asked for a size it lacks keeps its old one, and in Media
+    Foundation a capture left that way fails on the next size change. So
+    after each size refused the device is opened afresh.
+    """
+    cap = open_capture(index)
+    if cap is None:
+        return None
+    sizes = []
+    try:
+        ok, _ = cap.read()
+        if not ok:
+            return None
+        for w, h in SIZES:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+            if (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                    int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))) == (w, h):
+                ok, frame = cap.read()
+                if ok and frame.shape[1::-1] == (w, h):
+                    sizes.append((w, h))
+            else:
+                cap.release()
+                cap = open_capture(index)
+                if cap is None:
+                    break
+    finally:
+        if cap is not None:
+            cap.release()
+    return {"index": index, "sizes": sizes} if sizes else None
 
 
 class CameraStream:
@@ -47,14 +113,11 @@ class CameraStream:
         self._thread.start()
 
     def _loop(self):
-        cap = cv2.VideoCapture(self.index, cv2.CAP_DSHOW)
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+        cap = open_capture(self.index, self._width, self._height)
+        if cap is not None:
             self._cap = cap
             self._open_ok = True
         else:
-            cap.release()
             self._running = False
         self._opened.set()
 
@@ -97,7 +160,7 @@ class CameraStream:
             _STREAMS.pop(self.index, None)
         self._running = False
         # Block until this device's cv2.VideoCapture is actually closed before
-        # returning. DirectShow tolerates only one capture per device -- without
+        # returning. A device tolerates only one capture at a time -- without
         # this, a caller that immediately re-acquires the same index (a new
         # CameraStream, on a new thread) can open a second cv2.VideoCapture
         # while this one is still mid-read or mid-release, which is a known way

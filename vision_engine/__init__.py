@@ -1,3 +1,8 @@
+import os
+
+# As mainconsole.py sets it, for when the vision engine is loaded first
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
+
 from .vision_controller import (
     VisionController,
     VisionResult,
