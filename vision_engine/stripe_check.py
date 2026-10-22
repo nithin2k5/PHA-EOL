@@ -75,6 +75,9 @@ MIN_CABLE_CONTRAST = 15
 CABLE_CONTRAST_SHARE = 0.35
 # ... and colourless: a coloured mark on the cable is not a white stripe
 MAX_CABLE_WHITE_SATURATION = 60
+# Paler stripes on a cable are named white when this bright, as white is
+# found anywhere (see colour_masks), and grey when darker
+MIN_WHITE_BRIGHTNESS = 185
 
 # Light yellow paint is this saturated, against about 30 for the named
 # colour and under 20 for white paint (see colour_masks)
@@ -142,7 +145,7 @@ def colour_masks(bgr: np.ndarray) -> dict:
     # Light yellow paint is barely tinted, but bright: it is yellow, not white
     yellow = (h >= 18) & (h <= 38) & (vivid | ((s >= PALE_YELLOW_SATURATION) & (v > 185)))
     masks = {
-        "white": (s < 55) & (v > 185) & ~yellow,
+        "white": (s < 55) & (v > MIN_WHITE_BRIGHTNESS) & ~yellow,
         "red": vivid & ((h < 9) | (h > 165)),
         "yellow": yellow,
         "green": pale & (h >= 40) & (h <= 88),
@@ -455,17 +458,19 @@ def read_stripes(frame: np.ndarray, roi: dict, colour: Optional[str] = None,
 
     if colour is None:
         colour, _ = dominant_colour(patch)
-        if colour is None and _is_cable_box(roi):
-            colour = "white"
         if colour is None:
-            raise ValueError("No stripe colour found in the box.")
+            # Nothing coloured: white or grey stripes, told apart by how
+            # pale they are along the cable
+            try:
+                return _read_cable(frame, roi, count)
+            except ValueError:
+                raise ValueError("No stripe colour found in the box.")
     elif colour not in COLOURS:
         raise ValueError(f"Unknown stripe colour '{colour}'.")
-    if colour in CABLE_COLOURS and _is_cable_box(roi):
+    # Grey is found only along the cable, in whatever box is drawn round it;
+    # white is too when the box is drawn tight round the cable
+    if colour == "grey" or (colour in CABLE_COLOURS and _is_cable_box(roi)):
         return _read_cable(frame, roi, count, colour)
-    if colour not in MASK_COLOURS:
-        raise ValueError(f"{colour.capitalize()} stripes are found only on a cable: "
-                         f"draw the box tight round it.")
 
     masks = colour_masks(patch)
     bands = _colour_bands(masks, colour)
@@ -949,21 +954,42 @@ def _run_outlines(runs: list, centres: np.ndarray, rows: int,
 
 
 def _read_cable(frame: np.ndarray, roi: dict, count: Optional[int],
-                colour: str = "white") -> Tuple[dict, List[np.ndarray]]:
-    """read_stripes() for white or grey stripes in a box drawn tight round the
-    cable. Both are found the same way; `colour` is what the operator calls
-    them."""
-    box = (roi["x"], roi["y"], roi["width"], roi["height"])
+                colour: Optional[str] = None) -> Tuple[dict, List[np.ndarray]]:
+    """read_stripes() for white or grey stripes along a cable. Both are found
+    the same way; `colour` is what the operator calls them, or None to name
+    them by how pale they are.
+
+    The cable runs along the box's longer side. A box not drawn tight round
+    the cable may be about as wide as it is long, so there the other way is
+    tried too.
+    """
     along_x = roi["width"] >= roi["height"]
+    if _is_cable_box(roi):
+        return _read_cable_along(frame, roi, count, colour, along_x)
+    try:
+        return _read_cable_along(frame, roi, count, colour, along_x)
+    except ValueError as e:
+        try:
+            return _read_cable_along(frame, roi, count, colour, not along_x)
+        except ValueError:
+            raise e
+
+
+def _read_cable_along(frame: np.ndarray, roi: dict, count: Optional[int],
+                      colour: Optional[str], along_x: bool) -> Tuple[dict, List[np.ndarray]]:
+    """_read_cable() with the cable running across the frame (`along_x`) or
+    down it."""
+    box = (roi["x"], roi["y"], roi["width"], roi["height"])
     v, sat = _brightness(frame, box, along_x)
     _, rows = _cable_band(v)
     if rows < 2:
-        raise ValueError("No cable found in the box. Draw it tight round the cable.")
+        raise ValueError("No cable found in the box. Draw it round the cable.")
     centres = _track(v, rows)
-    runs = _cable_runs(_profile(v, centres, rows), MIN_CABLE_CONTRAST)
+    profile = _profile(v, centres, rows)
+    runs = _cable_runs(profile, MIN_CABLE_CONTRAST)
     runs = _white_only(runs, _profile(sat, centres, rows))
     if not runs:
-        raise ValueError(f"No {colour} stripes found on the cable.")
+        raise ValueError(f"No {colour or 'white or grey'} stripes found on the cable.")
     # A box along the cable can take in other pale marks, such as where the
     # cable crosses a bracket. The stripes are the ones lying close together:
     # within half as far again as the closest two
@@ -972,6 +998,10 @@ def _read_cable(frame: np.ndarray, roi: dict, count: Optional[int],
         clusters = _clusters(runs, min(np.diff(mids)) * 1.5)
         wanted = int(count) if count else None
         runs = max(clusters, key=lambda c: (len(c) == wanted, len(c), sum(r[2] for r in c)))
+    if colour is None:
+        # As bright as white paint is found anywhere, or else grey
+        top = np.median([profile[s:e].max() for s, e, _ in runs])
+        colour = "white" if top >= MIN_WHITE_BRIGHTNESS else "grey"
     if count and int(count) != len(runs):
         raise ValueError(f"{len(runs)} {colour} stripes found together on the cable, "
                          f"not {int(count)}.")
