@@ -1929,22 +1929,14 @@ class EOLTesterGUI:
             source, title = stripe_check.CAMERA_SOURCE, "Camera 2 (stripes)"
         self.stop_camera_streams("Setting up…")
         was_on = self.camera_check_saved(number)
-        areas_were = self.camera2_areas() if number == 2 else None
         self.camera_check_user = None
         try:
             vision_settings._open_camera_dialog(
                 self.root, source, title, check_key=self.CAMERA_CHECK_KEYS[number],
                 allow_check_change=lambda window: self.allow_camera_check_change(number,
-                                                                                  window),
-                # Camera 2 also draws the loaded part's stripe group areas
-                part_number=(getattr(self, 'partNumber', '') or None) if number == 2
-                else None)
+                                                                                  window))
         finally:
             self.start_camera_streams()
-
-        if number == 2 and self.camera2_areas() != areas_were:
-            self.log_operator_action("CAM2_AREAS", f"Changed by {self.camera_check_user}")
-            self.safe_update_message("Camera 2 detection areas changed.", "green")
 
         # It applies from the next test started
         on = self.camera_check_saved(number)
@@ -1957,13 +1949,6 @@ class EOLTesterGUI:
                 f"Camera {number} check on - it checks each part." if on else
                 f"Camera {number} check off - it will not check the parts.",
                 "green" if on else "red")
-
-    def camera2_areas(self):
-        """Camera 2's region and the loaded part's group areas, to tell a change."""
-        model = stripe_check.load_model(self.partNumber) if getattr(self, 'partNumber', '') \
-            else None
-        return (stripe_check.load_roi(),
-                [g.get("region") for g in stripe_check.groups_of(model)] if model else [])
 
     def grab_camera1(self):
         """A frame from camera 1, or None if it isn't a USB camera set up here."""
@@ -1986,15 +1971,15 @@ class EOLTesterGUI:
 
     CAMERA_NG_POPUP_MS = 4000
     CAMERA_NG_IMAGE_WIDTH = 480
-    # Camera 2's search regions and stripes, by their group's verdict (BGR)
+    # Camera 2's cable boxes and stripes, by their group's verdict (BGR)
     REGION_INK = {True: (0, 160, 0), False: (0, 0, 255)}
 
     def with_stripe_regions(self, result):
         """A copy of camera 2's judged frame with each stripe group drawn on it.
 
-        Each group's search region is boxed and its stripes outlined, green
-        if that group was found and red if not, so a picture shows which
-        group failed. A group searched across the whole frame has no box.
+        Each group's cable box is drawn and its stripes outlined, green if
+        that group passed and red if not, so a picture shows which group
+        failed.
         """
         img = result.frame.copy()
         thick = max(2, img.shape[1] // 320)
@@ -2007,7 +1992,7 @@ class EOLTesterGUI:
             if group.region:
                 x, y, w, h = group.region
                 cv2.rectangle(img, (x, y), (x + w, y + h), ink, thick)
-                label = f"GROUP {n}" if several else "DETECTION REGION"
+                label = f"GROUP {n}" if several else "CABLE"
                 cv2.putText(img, label, (x + 4, max(y - 8, 18)),
                             cv2.FONT_HERSHEY_SIMPLEX, scale, ink, thick)
         return img

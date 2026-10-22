@@ -2401,55 +2401,26 @@ def _prompt_part_number(parent, title, prompt, taken=()):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _open_camera_dialog(parent, source=None, title="Inspection Camera",
-                        check_key=None, allow_check_change=None, part_number=None):
+                        check_key=None, allow_check_change=None):
     """Pick and verify a camera. Returns True if the config changed.
 
     `source` names the camera in camera_cfg.ini; by default it is the one
     template matching uses. `check_key` names the vision_config.json
     setting that turns this camera's check of the parts on or off, and adds
     a box for it; `allow_check_change(window)` is asked when the box is
-    clicked, and returns False to leave it as it was. For camera 2,
-    `part_number` adds that part's stripe group areas to what can be drawn.
-    The areas decide what passes, so with `allow_check_change` they stay
-    locked until it allows a change too; one login unlocks both.
+    clicked, and returns False to leave it as it was.
     """
     if not _cv2_ok or not _pil_ok:
         messagebox.showerror("Camera", "OpenCV and Pillow are required.", parent=parent)
         return False
 
     from vision_engine import camera, load_vision_config, save_vision_config
-    from vision_engine.stripes import stripe_check
 
     cam = _load_cam_cfg(source)
-    # Camera 2 searches only the areas drawn on its preview
-    with_roi = source == stripe_check.CAMERA_SOURCE
-    saved_roi = stripe_check.load_roi() if with_roi else None
-
-    # What can be drawn on the preview: camera 2's region, used for every
-    # part, then each stripe group's own area of the loaded part. "size" is
-    # the frame size a box belongs to; it is only shown at that size.
-    targets = []
-    part_model = stripe_check.load_model(part_number) if with_roi and part_number else None
-    if with_roi:
-        targets.append({"label": "Camera 2 region (every part)", "short": "camera",
-                        "roi": saved_roi,
-                        "size": tuple(saved_roi["frame_size"]) if saved_roi else None,
-                        "box": None})
-    if part_model:
-        size = tuple(part_model.get("frame_size") or ())
-        for n, g in enumerate(stripe_check.groups_of(part_model), start=1):
-            targets.append({"label": "Group %d  ·  %s × %d" % (n, g["colour"], g["count"]),
-                            "short": "G%d" % n, "roi": g.get("region"), "size": size,
-                            "box": g["roi"]})
-    target = {"i": 0}
 
     # Taller with the camera's on/off box, so Re-scan still fits beneath it
-    win = _dialog(parent, "Camera Configuration", 900 if with_roi else 820,
-                  (680 if check_key else 580) + (130 if with_roi else 0)
-                  + 30 * max(0, len(targets) - 1))
-    _dialog_header(win, title,
-                   "Choose an area on the right, then drag it on the preview." if with_roi else
-                   "The preview is the exact feed inspection will use.")
+    win = _dialog(parent, "Camera Configuration", 820, 680 if check_key else 580)
+    _dialog_header(win, title, "The preview is the exact feed inspection will use.")
 
     alive = {"v": True}
     stream = {"s": None, "index": None}
@@ -2469,12 +2440,10 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
 
     prev_wrap = tk.Frame(body, bg=LINE)
     prev_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-    preview = RoiView(prev_wrap, editable=with_roi,
-                      on_change=lambda r, final: _roi_changed(r))
+    preview = RoiView(prev_wrap, editable=False)
     preview.pack(fill="both", expand=True, padx=1, pady=1)
     preview.set_placeholder("Scanning for cameras…")
 
-    # Scrolls, so the areas stay reachable however many groups a part has
     rail_scroll = ui.scrollable(body, bg=BG)
     rail_scroll.configure(width=290)
     rail_scroll.grid(row=0, column=1, sticky="ns")
@@ -2491,8 +2460,7 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     check_allowed = {"v": allow_check_change is None}
 
     def _on_check():
-        # The tick only changes after a login; one login covers the rest of
-        # this dialog, so Save does not ask again
+        # The tick only changes after a login
         if check_allowed["v"]:
             return
         wanted = check_var.get()
@@ -2500,7 +2468,6 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
         if allow_check_change(win):
             check_allowed["v"] = True
             check_var.set(wanted)
-            _paint_areas()      # the same login unlocks the areas
 
     if check_key:
         v_cfg = load_vision_config()
@@ -2543,130 +2510,6 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
 
     btn_rescan = _btn(cb_body, "Re-scan", BTN_NEUTRAL, pady=5, icon="refresh")
     btn_rescan.pack(fill="x", pady=(10, 0))
-
-    CAMERA_INK = "#8A8A8A"
-    GROUP_INK = "#1E78C8"
-    roi_lbl = None
-    target_btns = []
-    if with_roi:
-        roi_card = _card(rail, "Detection areas", icon="box")
-        roi_card.pack(fill="x", pady=(12, 0))
-        rb = roi_card.body
-        tk.Label(rb, text="Draw" if part_model else "Drag on the preview to draw it.",
-                 bg=PANEL, fg=TXT_DIM, font=(FONT, 10), anchor="w").pack(fill="x")
-        target_var = tk.IntVar(value=0)
-        if part_model:
-            for i, t in enumerate(targets):
-                if i == 1:
-                    tk.Label(rb, text="Part %s — its group areas" % part_number,
-                             bg=PANEL, fg=TXT, font=(FONT, 10, "bold"),
-                             anchor="w").pack(fill="x", pady=(8, 0))
-                b = tk.Radiobutton(rb, text=t["label"], value=i, variable=target_var,
-                                   command=lambda: _pick_target(target_var.get()),
-                                   bg=PANEL, fg=TXT, activebackground=PANEL,
-                                   selectcolor=BG, anchor="w", font=(FONT, 11))
-                b.pack(fill="x")
-                target_btns.append(b)
-        elif part_number:
-            tk.Label(rb, text="Part %s has no stripe check, so it has no group areas."
-                              % part_number, bg=PANEL, fg=TXT_FAINT, font=(FONT, 10),
-                     wraplength=235, justify="left", anchor="w").pack(fill="x", pady=(4, 0))
-        roi_lbl = tk.Label(rb, text="", bg=PANEL, fg=TXT_DIM, font=(FONT, 10),
-                           wraplength=235, justify="left", anchor="w")
-        roi_lbl.pack(fill="x", pady=(8, 0))
-        btn_clear_area = _btn(rb, "Whole frame", BTN_NEUTRAL, pady=5,
-                              command=lambda: preview.set_roi(None))
-        btn_clear_area.pack(fill="x", pady=(8, 0))
-        # Locked until a login; the box above takes the same one
-        btn_unlock = _btn(rb, "Log In to Change Areas", BTN_PRIMARY, pady=5,
-                          command=lambda: _unlock_areas())
-
-    def _unlock_areas():
-        if allow_check_change(win):
-            check_allowed["v"] = True
-            _paint_areas()
-
-    def _res():
-        return tuple(int(v) for v in res_var.get().split("x"))
-
-    def _usable(t):
-        """A group's area can only be drawn at the size its part was taught at."""
-        return t["short"] == "camera" or t["size"] == _res()
-
-    def _paint_areas():
-        """The area being drawn on the preview, the rest dashed."""
-        if not with_roi:
-            return
-        t = targets[target["i"]]
-        res = _res()
-        unlocked = check_allowed["v"]
-        preview.set_editable(_usable(t) and unlocked)
-        if unlocked:
-            btn_unlock.pack_forget()
-        else:
-            btn_unlock.pack(fill="x", pady=(8, 0))
-        preview.set_accent(OK_GREEN if t["short"] == "camera" else GROUP_INK)
-        preview.set_roi(t["roi"] if t["size"] == res else None, notify=False)
-        frames = []
-        for i, other in enumerate(targets):
-            if other["size"] != res:
-                continue
-            if other["box"]:
-                frames.append((other["box"], ui.ACCENT_FILL, "%s stripes" % other["short"]))
-            if other["roi"] and i != target["i"]:
-                frames.append((other["roi"], CAMERA_INK if other["short"] == "camera"
-                               else GROUP_INK,
-                               "camera region" if other["short"] == "camera"
-                               else "%s area" % other["short"]))
-        preview.set_frames(frames)
-        for i, b in enumerate(target_btns):
-            b.config(state="normal" if _usable(targets[i]) else "disabled")
-        _describe_area()
-
-    def _describe_area():
-        t = targets[target["i"]]
-        roi = t["roi"] if t["size"] == _res() else None
-        if t["short"] == "camera":
-            btn_clear_area.configure(text="Whole frame")
-            if roi:
-                text = ("Camera 2 region: %d x %d px. Groups that look anywhere in "
-                        "camera 2's area are searched only inside it."
-                        % (roi["width"], roi["height"]))
-            else:
-                text = ("No camera 2 region: groups that look anywhere in camera 2's "
-                        "area search the whole frame. Drag on the preview to limit it.")
-            roi_lbl.config(text=text, fg=TXT_DIM if roi else TXT_FAINT)
-        elif not _usable(t):
-            btn_clear_area.configure(text="Use camera 2's region")
-            roi_lbl.config(text="Part %s was taught at %dx%d. Set that resolution to "
-                                "draw its areas." % ((part_number,) + t["size"]), fg=WARN)
-        else:
-            btn_clear_area.configure(text="Use camera 2's region")
-            if roi:
-                text = ("%s area: %d x %d px. This group is looked for only inside it. "
-                        "It must contain the group's stripes, outlined on the preview."
-                        % (t["label"].split("  ·")[0], roi["width"], roi["height"]))
-            else:
-                text = ("%s looks anywhere in camera 2's region. Drag an area round its "
-                        "stripes to look for it only there." % t["label"].split("  ·")[0])
-            roi_lbl.config(text=text, fg=TXT_DIM if roi else TXT_FAINT)
-        if not check_allowed["v"]:
-            roi_lbl.config(text=roi_lbl.cget("text") + "\n\nLog in to change it.")
-        _set_btn_enabled(btn_clear_area, _usable(t) and roi is not None
-                         and check_allowed["v"])
-
-    def _pick_target(i):
-        target["i"] = i
-        _paint_areas()
-
-    def _roi_changed(roi):
-        if not with_roi:
-            return
-        t = targets[target["i"]]
-        t["roi"], t["size"] = roi, (_res() if t["short"] == "camera" else t["size"])
-        _describe_area()
-        if roi is None:
-            _paint_areas()
 
     status = tk.Label(rail, text="", bg=BG, fg=TXT_DIM, font=(FONT, 11),
                       wraplength=250, justify="left", anchor="w")
@@ -2726,11 +2569,6 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
 
     def _on_res_change(*_a):
         _on_device_change()
-        # Boxes drawn at another size mean nothing at this one
-        if with_roi and not _usable(targets[target["i"]]):
-            target["i"] = 0
-            target_var.set(0)
-        _paint_areas()
 
     cmb_dev.bind("<<ComboboxSelected>>", _on_device_pick)
     cmb_res.bind("<<ComboboxSelected>>", _on_res_change)
@@ -2782,13 +2620,8 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
         if s is not None:
             frame = s.latest()
             if frame is not None:
-                shape_was = (None if preview.get_image() is None
-                             else preview.get_image().shape[:2])
                 preview.set_image(frame)
                 preview.set_hint("%d x %d" % (frame.shape[1], frame.shape[0]))
-                # A new frame size drops the box being drawn; put it back
-                if shape_was != frame.shape[:2]:
-                    _paint_areas()
             elif not s.is_alive():
                 preview.set_image(None)
                 preview.set_placeholder("Camera %d is not delivering frames."
@@ -2811,22 +2644,8 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
                     "No frames have arrived from camera %d yet.\n\nSave anyway?" % idx,
                     parent=win):
                 return
-        groups_were = ([g.get("region") for g in stripe_check.groups_of(part_model)]
-                       if part_model else [])
-        group_areas = [t["roi"] for t in targets[1:]]
-        try:
-            if group_areas != groups_were:
-                stripe_check.set_group_regions(part_number, group_areas)
-        except ValueError as e:
-            messagebox.showerror("Group Area", str(e), parent=win)
-            return
         try:
             _save_cam_cfg(idx, w, h, idx >= 0, source)
-            if with_roi:
-                # The region is in the preview's pixels, which are this resolution's
-                camera_region = targets[0]
-                stripe_check.save_roi(camera_region["roi"]
-                                      if camera_region["size"] == (w, h) else None, (w, h))
             if check_key and check_now != check_was:
                 v_cfg = load_vision_config()
                 v_cfg[check_key] = check_now
@@ -2852,7 +2671,6 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     win.protocol("WM_DELETE_WINDOW", _close)
     win.bind("<Escape>", lambda e: _close())
 
-    _paint_areas()
     _scan()
     _tick()
     parent.wait_window(win)
@@ -2879,11 +2697,15 @@ def _open_stripe_teach(parent, part_number=None):
     reteach = part_number is not None
     previous = stripe_check.load_model(part_number) if reteach else None
 
+    def _as_box(rect):
+        # A saved group's boxes are (x, y, w, h)
+        return None if rect is None else dict(zip(("x", "y", "width", "height"), rect))
+
     win = _dialog(parent, "Teach Stripes", 1120, 720)
     _dialog_header(
         win,
         "Re-teach stripes — “%s”" % part_number if reteach else "Teach Stripes",
-        "Capture a good part on camera 2, then box each group of stripes.")
+        "Capture a good part on camera 2, then box each group of stripes and the cable round it.")
 
     alive = {"v": True}
     live = {"on": False}
@@ -2891,18 +2713,18 @@ def _open_stripe_teach(parent, part_number=None):
     # The frame being taught from
     state = {"frame": None, "label": "", "loading": False}
 
-    def _new_group(roi=None, region=None):
-        # "colour" is the one the operator picked, kept when the box is
-        # redrawn; "model" and "outlines" are what was read from the box;
-        # "own" is True when the group is searched only in its own area
-        return {"roi": roi, "region": region, "own": region is not None,
-                "colour": None, "count": None,
-                "model": None, "outlines": [], "error": None}
+    def _new_group(roi=None, area=None, body=None, colour=None, count=None):
+        # "roi" is the box round the stripes and "area" the longer one round
+        # the cable; "body", "colour" and "count" are what the check will
+        # expect, kept when a box is redrawn; "model" and "outlines" are what
+        # was read from the boxes
+        return {"roi": roi, "area": area, "body": body, "colour": colour,
+                "count": count, "model": None, "outlines": [], "error": None}
 
     groups = [_new_group()]
     # The group being filled in, or None when none is
     active = {"i": 0}
-    # What dragging on the picture draws for that group: "box" or "region"
+    # What dragging on the picture draws for that group: "box" or "area"
     draw = {"mode": "box"}
     result = {"saved": None}
 
@@ -2930,8 +2752,9 @@ def _open_stripe_teach(parent, part_number=None):
     view_wrap.grid(row=0, column=0, sticky="nsew")
     # Zoomable: stripes are often only a few pixels wide in the frame, too
     # small to box accurately at the size that fits the whole picture
+    # Shown as captured: the stripes are judged on the colours as they are
     view = RoiView(view_wrap, on_change=lambda r, final: _roi_changed(r, final),
-                   zoomable=True, on_zoom=lambda z: _paint_zoom(), enhanced=True)
+                   zoomable=True, on_zoom=lambda z: _paint_zoom())
     # What to do next, in words, right above where it is done
     banner = tk.Label(view_wrap, text="", bg=ui.SUBTLE, fg=TXT, anchor="w",
                       font=(FONT, 13, "bold"), padx=12, pady=8)
@@ -3007,7 +2830,8 @@ def _open_stripe_teach(parent, part_number=None):
 
     s3, b3 = _step(rail, 3, "Stripe groups")
     _note(s3, "A group is one band of stripes of one colour, such as 3 yellow. "
-              "Add a group for each band on the part and fill each one in.")
+              "Add a group for each band on the part and fill each one in. The "
+              "cable must lie in the same place on every part, give or take a little.")
     group_rows = tk.Frame(s3, bg=BG)
     group_rows.pack(fill="x", pady=(6, 0))
     btn_add_grp = _btn(s3, "+ Add Group", BTN_NEUTRAL, pady=3,
@@ -3027,42 +2851,47 @@ def _open_stripe_teach(parent, part_number=None):
 
     _sub_head("A   Box its stripes")
     box_note = _note(editor, "")
+    btn_box = _btn(editor, "Redraw Stripe Box", BTN_NEUTRAL, pady=3,
+                   command=lambda: _set_mode("box"))
+    btn_box.pack(anchor="w", pady=(4, 0))
+
+    _sub_head("B   Box the cable round them")
+    area_note = _note(editor, "")
+    btn_area = _btn(editor, "Redraw Cable Box", BTN_NEUTRAL, pady=3,
+                    command=lambda: _set_mode("area"))
+    btn_area.pack(anchor="w", pady=(4, 0))
+
+    _sub_head("C   What the check expects")
     found_lbl = tk.Label(editor, text="—", bg=BG, fg=TXT_DIM, font=(FONT, 18, "bold"),
                          anchor="w")
     found_lbl.pack(fill="x")
-    pick_row = tk.Frame(editor, bg=BG)
-    pick_row.pack(fill="x", pady=(4, 0))
-    tk.Label(pick_row, text="Colour", bg=BG, fg=TXT_DIM, font=(FONT, 11),
-             width=7, anchor="w").pack(side="left")
+
+    def _pick_row(label):
+        row = tk.Frame(editor, bg=BG)
+        row.pack(fill="x", pady=(4, 0))
+        tk.Label(row, text=label, bg=BG, fg=TXT_DIM, font=(FONT, 11),
+                 width=7, anchor="w").pack(side="left")
+        return row
+
+    body_var = tk.StringVar()
+    cmb_body = ttk.Combobox(_pick_row("Cable"), textvariable=body_var, state="readonly",
+                            values=list(stripe_check.COLOURS), width=12,
+                            font=(FONT, 11))
+    cmb_body.pack(side="left")
+    pick_row = _pick_row("Stripes")
     colour_var = tk.StringVar()
     cmb_colour = ttk.Combobox(pick_row, textvariable=colour_var, state="readonly",
-                              values=list(stripe_check.COLOURS), width=10,
+                              values=list(stripe_check.COLOURS), width=12,
                               font=(FONT, 11))
     cmb_colour.pack(side="left")
-    tk.Label(pick_row, text="Count", bg=BG, fg=TXT_DIM, font=(FONT, 11)).pack(
-        side="left", padx=(14, 6))
+    tk.Label(pick_row, text="×", bg=BG, fg=TXT_DIM, font=(FONT, 11)).pack(
+        side="left", padx=(8, 6))
     count_var = tk.StringVar()
     spn_count = ttk.Spinbox(pick_row, from_=1, to=9, width=4, textvariable=count_var,
                             font=(FONT, 11), state="readonly")
     spn_count.pack(side="left")
     count_note = _note(editor, "")
     found_note = _note(editor, "")
-    btn_box = _btn(editor, "Redraw Box", BTN_NEUTRAL, pady=3,
-                   command=lambda: _set_mode("box"))
-    btn_box.pack(anchor="w", pady=(4, 0))
-
-    _sub_head("B   Where to look for it on the line")
-    area_var = tk.StringVar(value="camera")
-    for value, text in (("camera", "Anywhere in camera 2's detection area"),
-                        ("own", "Only inside an area I draw for this group")):
-        tk.Radiobutton(editor, text=text, value=value, variable=area_var,
-                       command=lambda: _on_area(), bg=BG, fg=TXT, anchor="w",
-                       activebackground=BG, selectcolor=PANEL, wraplength=270,
-                       justify="left", font=(FONT, 11)).pack(fill="x")
-    area_note = _note(editor, "")
-    btn_area = _btn(editor, "Redraw Area", BTN_NEUTRAL, pady=3,
-                    command=lambda: _set_mode("region"))
-    btn_area.pack(anchor="w", pady=(4, 0))
 
     btn_done = _btn(editor, "Done With This Group", BTN_PRIMARY, pady=5, icon="check",
                     command=lambda: _done_group())
@@ -3071,25 +2900,30 @@ def _open_stripe_teach(parent, part_number=None):
     # ── Behaviour ──────────────────────────────────────────────────────────
 
     BOX_INK = ui.ACCENT_FILL
-    REGION_INK = "#1E78C8"
+    AREA_INK = "#1E78C8"
 
     def _group():
         i = active["i"]
         return groups[i] if i is not None else None
 
     def _ready(g):
-        return g["model"] is not None and (not g["own"] or g["region"] is not None)
+        return (g["model"] is not None and g["count"] == g["model"]["count"]
+                and bool(g["body"]) and bool(g["colour"]))
+
+    def _what(g):
+        return "%s × %d on %s" % (g["colour"], g["count"] or g["model"]["count"], g["body"])
 
     def _status(g):
         """(text, colour) saying how far a group has got."""
         if g["roi"] is None:
             return "stripes not boxed yet", WARN
+        if g["area"] is None:
+            return "cable not boxed yet", WARN
         if g["model"] is None:
             return g["error"] or "no stripes read", WARN
-        what = "%s × %d" % (g["model"]["colour"], g["count"] or g["model"]["count"])
-        if g["own"] and g["region"] is None:
-            return what + "  ·  area not drawn yet", WARN
-        return what + ("  ·  own area" if g["own"] else "  ·  camera's area"), OK_GREEN
+        if not _ready(g):
+            return _what(g) + "  ·  count doesn't match", WARN
+        return _what(g), OK_GREEN
 
     def _count():
         try:
@@ -3101,7 +2935,7 @@ def _open_stripe_teach(parent, part_number=None):
         return {
             "Part number": bool(ent_pno.get().strip()),
             "Good part": state["frame"] is not None,
-            "Boxes": all(g["roi"] is not None for g in groups),
+            "Boxes": all(g["roi"] is not None and g["area"] is not None for g in groups),
             "Groups ready": all(_ready(g) for g in groups),
         }
 
@@ -3162,43 +2996,45 @@ def _open_stripe_teach(parent, part_number=None):
         editor.pack(fill="x")
         s4_title.config(text="Group %d" % (active["i"] + 1))
 
+        if g["roi"] is None:
+            box_note.config(text="Drag a box round this group's stripes on the picture, "
+                                 "with a little cable either side.", fg=TXT_FAINT)
+        else:
+            box_note.config(text="Stripe box %d × %d px. Drag its edges on the picture "
+                                 "to adjust it." % (g["roi"]["width"], g["roi"]["height"]),
+                            fg=TXT_FAINT)
+        if g["area"] is None:
+            area_note.config(text="A longer box round the cable at the stripes, with some "
+                                  "of the bench above and below it. The cable must run "
+                                  "along its long side.", fg=TXT_FAINT)
+        else:
+            area_note.config(text="Cable box %d × %d px. Only the cable inside it is "
+                                  "looked at; it must contain the stripe box."
+                                  % (g["area"]["width"], g["area"]["height"]),
+                             fg=TXT_FAINT)
+
         model = g["model"]
         state["loading"] = True
+        body_var.set(g["body"] or "")
+        colour_var.set(g["colour"] or "")
         if model is not None:
-            colour_var.set(model["colour"])
             count_var.set(str(g["count"] or model["count"]))
             found_lbl.config(text="%s × %d" % (model["colour"], model["count"]),
                              fg=OK_GREEN)
-            box_note.config(text="Found in the box. Drag its edges on the picture "
-                                 "to adjust it.", fg=TXT_FAINT)
             found_note.config(
-                text="Each stripe is about %.0f px wide; the group is %.0f px long. "
-                     "If the colour or count is wrong, correct it here."
-                     % (model["stripe_width"], model["span"]), fg=TXT_FAINT)
+                text="Found on a %s cable. Each stripe is about %.0f px wide; the group "
+                     "is %.0f px long. If a colour is named wrongly, correct it here."
+                     % (model["body"], model["stripe_width"], model["span"]),
+                fg=TXT_FAINT)
         else:
-            colour_var.set(g["colour"] or "")
             count_var.set("")
             found_lbl.config(text="—", fg=TXT_DIM)
-            box_note.config(text="Drag a box round this group's stripes on the picture, "
-                                 "with a little cable either side.",
-                            fg=TXT_FAINT if g["roi"] is None else WARN)
             found_note.config(text=g["error"] or "", fg=WARN)
         state["loading"] = False
         _check_count()
 
-        area_var.set("own" if g["own"] else "camera")
-        if not g["own"]:
-            area_note.config(text="The stripes may sit anywhere camera 2 searches.",
-                             fg=TXT_FAINT)
-        elif g["region"] is None:
-            area_note.config(text="Drag the area on the picture where this group may "
-                                  "be on the line. It must contain the box.", fg=WARN)
-        else:
-            area_note.config(text="Area %d × %d px. Only stripes inside it count for "
-                                  "this group." % (g["region"]["width"],
-                                                   g["region"]["height"]), fg=OK_GREEN)
         _set_btn_enabled(btn_box, draw["mode"] != "box")
-        _set_btn_enabled(btn_area, g["own"] and draw["mode"] != "region")
+        _set_btn_enabled(btn_area, g["roi"] is not None and draw["mode"] != "area")
         _set_btn_enabled(btn_done, _ready(g))
 
     def _paint_banner():
@@ -3213,54 +3049,67 @@ def _open_stripe_teach(parent, part_number=None):
                 text, fill = "Every group is ready — press Save", ui.SUCCESS_SOFT
             else:
                 text, fill = "Click Edit on the group that isn't ready", ui.ROW_BAND
-        elif draw["mode"] == "box":
-            if g["roi"] is None:
-                text, fill = "GROUP %d — drag a box round its stripes" % n, ui.ROW_BAND
-            elif g["model"] is None:
-                text, fill = "GROUP %d — %s" % (n, g["error"] or "no stripes found"), ui.DANGER_SOFT
-            else:
-                text, fill = ("GROUP %d — %s × %d found. %s" % (
-                    n, g["model"]["colour"], g["count"] or g["model"]["count"],
-                    "Now choose where to look for it (B)." if not _ready(g) else
-                    "Press Done, or adjust the box."), ui.SUCCESS_SOFT)
+        elif draw["mode"] == "box" and g["roi"] is None:
+            text, fill = "GROUP %d — drag a box round its stripes" % n, ui.ROW_BAND
+        elif draw["mode"] == "area" and g["area"] is None:
+            text, fill = "GROUP %d — drag a box round the cable at its stripes" % n, ui.ROW_BAND
+        elif g["model"] is None:
+            text, fill = "GROUP %d — %s" % (n, g["error"] or "no stripes found"), ui.DANGER_SOFT
+        elif not _ready(g):
+            text, fill = "GROUP %d — %d stripes found, %s expected" % (
+                n, g["model"]["count"], g["count"]), ui.DANGER_SOFT
         else:
-            if g["region"] is None:
-                text, fill = "GROUP %d — drag the area to look for it in" % n, ui.ROW_BAND
-            else:
-                text, fill = "GROUP %d — area drawn. Press Done, or adjust it." % n, ui.SUCCESS_SOFT
+            text, fill = ("GROUP %d — %s found. Press Done, or adjust the %s box."
+                          % (n, _what(g), "stripe" if draw["mode"] == "box" else "cable"),
+                          ui.SUCCESS_SOFT)
         banner.config(text=text, bg=fill)
 
     def _show_frame():
-        """The taught frame: the box or area being drawn, everything else
-        dashed and labelled, and every group's stripes outlined."""
+        """The taught frame: the box being drawn, everything else dashed and
+        labelled, and every group's stripes outlined."""
         if state["frame"] is None or live["on"]:
             return
         view.set_image(state["frame"])
         g = _group()
-        editing_key = "roi" if draw["mode"] == "box" else "region"
+        editing_key = "roi" if draw["mode"] == "box" else "area"
         view.set_editable(g is not None)
-        view.set_accent(BOX_INK if draw["mode"] == "box" else REGION_INK)
+        view.set_accent(BOX_INK if draw["mode"] == "box" else AREA_INK)
         view.set_roi(g[editing_key] if g is not None else None, notify=False)
         frames = []
         for n, other in enumerate(groups, start=1):
-            for key, ink, name in (("roi", BOX_INK, "box"), ("region", REGION_INK, "area")):
+            for key, ink, name in (("roi", BOX_INK, "stripes"), ("area", AREA_INK, "cable")):
                 if other[key] and not (other is g and key == editing_key):
                     frames.append((other[key], ink, "G%d %s" % (n, name)))
         view.set_frames(frames)
         view.set_outlines([o for other in groups for o in other["outlines"]])
         view.set_hint("Scroll to zoom  ·  right-drag to move")
 
+    def _suggest_area(roi):
+        """A first cable box round a stripe box, for the operator to adjust:
+        three times its size each way, within the frame."""
+        fh, fw = state["frame"].shape[:2]
+        cx = roi["x"] + roi["width"] / 2.0
+        cy = roi["y"] + roi["height"] / 2.0
+        x0, y0 = max(0, int(cx - 1.5 * roi["width"])), max(0, int(cy - 1.5 * roi["height"]))
+        x1 = min(fw, int(cx + 1.5 * roi["width"]))
+        y1 = min(fh, int(cy + 1.5 * roi["height"]))
+        return {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0}
+
     def _analyse(g):
-        """Read the stripes inside a group's box, as saving would."""
+        """Read the group inside its boxes, as saving would."""
         g["model"], g["outlines"], g["error"] = None, [], None
-        if state["frame"] is not None and g["roi"] is not None:
-            try:
-                g["model"], g["outlines"] = stripe_check.read_group(
-                    state["frame"], g["roi"], g["region"] if g["own"] else None,
-                    colour=g["colour"])
-                g["count"] = g["model"]["count"]
-            except ValueError as e:
-                g["error"] = str(e)
+        if state["frame"] is None or g["roi"] is None or g["area"] is None:
+            return
+        try:
+            g["model"], g["outlines"] = stripe_check.read_group(
+                state["frame"], g["roi"], g["area"], body=g["body"], colour=g["colour"])
+        except ValueError as e:
+            g["error"] = str(e)
+            return
+        # Named from what was seen until the operator chooses otherwise
+        g["body"] = g["body"] or g["model"]["body"]
+        g["colour"] = g["colour"] or g["model"]["colour"]
+        g["count"] = g["count"] or g["model"]["count"]
 
     def _refresh_all():
         _paint_groups()
@@ -3275,12 +3124,17 @@ def _open_stripe_teach(parent, part_number=None):
             return
         model = g["model"]
         n = _count()
-        if not state["loading"] and model is not None and n is not None:
+        if not state["loading"] and model is not None and n is not None and n != g["count"]:
             g["count"] = n
+            _set_btn_enabled(btn_done, _ready(g))
+            _paint_groups()
+            _paint_banner()
+            _refresh_gates()
         if model is not None and n is not None and n != model["count"]:
             count_note.config(
-                text="%d were found, but the check will expect %d. Only do this when "
-                     "stripes touch and can't be told apart." % (model["count"], n),
+                text="%d were found, but the check would expect %d, so every good part "
+                     "would fail. Check the boxes and the lighting; stripes that touch "
+                     "can't be told apart." % (model["count"], n),
                 fg=WARN)
         else:
             count_note.config(text="", fg=TXT_FAINT)
@@ -3289,28 +3143,19 @@ def _open_stripe_teach(parent, part_number=None):
         g = _group()
         if g is None:
             return
-        g["roi" if draw["mode"] == "box" else "region"] = roi
+        g["roi" if draw["mode"] == "box" else "area"] = roi
         if final:
+            # Boxed the stripes: offer a cable box round them, to adjust
+            if draw["mode"] == "box" and roi is not None and g["area"] is None:
+                g["area"] = _suggest_area(roi)
+                draw["mode"] = "area"
+            # Counted afresh from the new boxes
+            g["count"] = None
             _analyse(g)
-            # Boxed and read: lead on to the area, if one is wanted
-            if draw["mode"] == "box" and g["model"] is not None and g["own"] \
-                    and g["region"] is None:
-                draw["mode"] = "region"
             _refresh_all()
 
     def _set_mode(mode):
         draw["mode"] = mode
-        _refresh_all()
-
-    def _on_area():
-        g = _group()
-        if g is None:
-            return
-        g["own"] = area_var.get() == "own"
-        if not g["own"]:
-            g["region"] = None
-        draw["mode"] = "region" if g["own"] and g["model"] is not None else "box"
-        _analyse(g)
         _refresh_all()
 
     def _scroll_to(step_body):
@@ -3359,8 +3204,8 @@ def _open_stripe_teach(parent, part_number=None):
         g = _group()
         if g is None:
             return
+        g["body"] = body_var.get() or None
         g["colour"] = colour_var.get() or None
-        _analyse(g)
         _refresh_all()
 
     def _set_live(on):
@@ -3399,7 +3244,9 @@ def _open_stripe_teach(parent, part_number=None):
         reloaded = False
         if (all(g["roi"] is None for g in groups) and previous
                 and previous.get("frame_size") == [img.shape[1], img.shape[0]]):
-            groups[:] = [_new_group(g.get("roi"), g.get("region"))
+            groups[:] = [_new_group(_as_box(g.get("inspection_region")), _as_box(g.get("roi")),
+                                    g.get("body_colour"), g.get("stripe_colour"),
+                                    g.get("stripe_count"))
                          for g in stripe_check.groups_of(previous)] or [_new_group()]
             reloaded = True
         for g in groups:
@@ -3456,7 +3303,7 @@ def _open_stripe_teach(parent, part_number=None):
                 return
         try:
             stripe_check.teach(pno, state["frame"], [
-                {"roi": g["roi"], "region": g["region"] if g["own"] else None,
+                {"roi": g["roi"], "area": g["area"], "body": g["body"],
                  "colour": g["colour"], "count": g["count"]} for g in groups])
         except (ValueError, OSError) as e:
             messagebox.showerror("Save Failed", str(e), parent=win)
@@ -3483,6 +3330,7 @@ def _open_stripe_teach(parent, part_number=None):
     btn_live.configure(command=lambda: _set_live(True))
     btn_save.configure(command=_save)
     btn_cancel.configure(command=_close)
+    cmb_body.bind("<<ComboboxSelected>>", _on_colour)
     cmb_colour.bind("<<ComboboxSelected>>", _on_colour)
     count_var.trace_add("write", _check_count)
     win.protocol("WM_DELETE_WINDOW", _close)
@@ -3661,7 +3509,7 @@ def _open_stripe_test(parent, part_number):
             view.set_outlines(result.stripe_boxes)
             view.set_accent(color)
             view.set_roi(None, notify=False)
-            # Each group's search region, in its own verdict's colour
+            # Each group's cable box, in its own verdict's colour
             several = len(result.groups) > 1
             view.set_frames([
                 ({"x": g.region[0], "y": g.region[1], "width": g.region[2],
@@ -3669,9 +3517,7 @@ def _open_stripe_test(parent, part_number):
                  OK_GREEN if g.ok else NG_RED,
                  ("G%d " % n if several else "") + g.seen.replace(" x", " × "))
                 for n, g in enumerate(result.groups, start=1) if g.region])
-            searched = [g for g in result.groups if g.region]
-            view.set_hint("Each group was searched in its own region" if searched else
-                          "The whole picture was searched")
+            view.set_hint("Each group was judged in its own cable box")
         else:
             view.set_frames([])
             view.set_image(None)
@@ -3684,7 +3530,9 @@ def _open_stripe_test(parent, part_number):
                      "if it still fails.",
                 fg=WARN)
         elif result.judgement == "ERROR":
-            hint.config(text="Nothing was judged — fix the error above and run again.",
+            hint.config(text="The picture couldn't be judged reliably — fix the cause "
+                             "above and run again. A part taught with the earlier stripe "
+                             "check must be re-taught.",
                         fg=WARN)
         else:
             hint.config(text="", fg=TXT_DIM)
