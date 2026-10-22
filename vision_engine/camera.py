@@ -15,7 +15,7 @@ can't open.
 """
 import threading
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -198,6 +198,26 @@ class CameraStream:
             time.sleep(0.02)
         with self._frame_lock:
             return self._frame.copy() if self._frame is not None else None
+
+    def read_after(self, count: int, timeout: float = 2.0) -> Tuple[Optional[np.ndarray], int]:
+        """The first frame read after the `count`-th, and its number.
+
+        Gives (None, count) if none arrives in `timeout`. Number 0 asks for
+        the next frame once the device has settled, as read() does, so a
+        caller can collect several fresh frames one after another.
+        """
+        if not self.wait_until_open(timeout):
+            return None, count
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._frame_lock:
+                if self._frame is not None and self._frames_read > count \
+                        and self._frames_read >= 30:
+                    return self._frame.copy(), self._frames_read
+            if not self._running:
+                break
+            time.sleep(0.005)
+        return None, count
 
 
 def acquire(index: int, width: int = 640, height: int = 480) -> Optional[CameraStream]:

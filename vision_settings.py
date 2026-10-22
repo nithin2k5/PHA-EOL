@@ -584,11 +584,12 @@ class RoiView(tk.Canvas):
             return
 
         s, ox, oy, dw, dh = self._view
+        shown = self._dimmed()
         if self._zoom <= 1.0:
-            self._photo, _ = _to_photo(self._shown, dw, dh)
+            self._photo, _ = _to_photo(shown, dw, dh)
             self.create_image(ox, oy, image=self._photo, anchor="nw")
         else:
-            self._draw_visible(s, ox, oy, cw, ch)
+            self._draw_visible(shown, s, ox, oy, cw, ch)
         self.create_rectangle(ox, oy, ox + dw, oy + dh, outline=LINE)
 
         for shape in self._outlines:
@@ -623,7 +624,25 @@ class RoiView(tk.Canvas):
                                         fill=PANEL, outline=LINE)
             self.tag_raise(tid, rid)
 
-    def _draw_visible(self, s, ox, oy, cw, ch):
+    # How bright the picture stays outside the ROI being drawn
+    DIM = 0.45
+
+    def _dimmed(self):
+        """The picture as drawn: outside the ROI darkened evenly, so the ROI
+        reads at a glance while every pixel stays as the camera saw it."""
+        img = self._shown
+        if not self._roi:
+            return img
+        ih, iw = img.shape[:2]
+        x0 = min(max(int(self._roi["x"]), 0), iw)
+        y0 = min(max(int(self._roi["y"]), 0), ih)
+        x1 = min(max(int(self._roi["x"] + self._roi["width"]), 0), iw)
+        y1 = min(max(int(self._roi["y"] + self._roi["height"]), 0), ih)
+        out = (img * self.DIM).astype(img.dtype)
+        out[y0:y1, x0:x1] = img[y0:y1, x0:x1]
+        return out
+
+    def _draw_visible(self, img, s, ox, oy, cw, ch):
         """Draw just the part of the image the zoomed view shows.
 
         Scaling the whole frame at 16x would build an image hundreds of
@@ -636,7 +655,7 @@ class RoiView(tk.Canvas):
         y1 = min(ih, int((ch - oy) / s) + 2)
         if x1 <= x0 or y1 <= y0:
             return
-        patch = self._shown[y0:y1, x0:x1]
+        patch = img[y0:y1, x0:x1]
         rgb = cv2.cvtColor(patch, cv2.COLOR_GRAY2RGB if patch.ndim == 2 else cv2.COLOR_BGR2RGB)
         w, h = max(1, round((x1 - x0) * s)), max(1, round((y1 - y0) * s))
         # Close in, show the real pixels rather than a blur, so a stripe's
@@ -648,13 +667,6 @@ class RoiView(tk.Canvas):
     def _draw_marker(self):
         s, ox, oy, dw, dh = self._view
         x0, y0, x1, y1 = self._roi_screen()
-
-        # Dim everything outside the ROI so the taught region reads at a glance.
-        for box in ((ox, oy, ox + dw, y0), (ox, y1, ox + dw, oy + dh),
-                    (ox, y0, x0, y1), (x1, y0, ox + dw, y1)):
-            if box[2] > box[0] and box[3] > box[1]:
-                self.create_rectangle(*box, fill="#000000", outline="",
-                                      stipple="gray50")
 
         self.create_rectangle(x0, y0, x1, y1, outline=self._accent, width=2)
 
@@ -2912,7 +2924,8 @@ def _open_stripe_teach(parent, part_number=None):
                 and bool(g["body"]) and bool(g["colour"]))
 
     def _what(g):
-        return "%s × %d on %s" % (g["colour"], g["count"] or g["model"]["count"], g["body"])
+        return "%s × %d on %s" % (g["colour"] or "?", g["count"] or g["model"]["count"],
+                                  g["body"] or "?")
 
     def _status(g):
         """(text, colour) saying how far a group has got."""
@@ -2922,6 +2935,8 @@ def _open_stripe_teach(parent, part_number=None):
             return "stripes ROI not drawn yet", WARN
         if g["model"] is None:
             return g["error"] or "no stripes read", WARN
+        if not g["body"] or not g["colour"]:
+            return _what(g) + "  ·  choose the colours", WARN
         if not _ready(g):
             return _what(g) + "  ·  count doesn't match", WARN
         return _what(g), OK_GREEN
@@ -3021,13 +3036,20 @@ def _open_stripe_teach(parent, part_number=None):
         colour_var.set(g["colour"] or "")
         if model is not None:
             count_var.set(str(g["count"] or model["count"]))
-            found_lbl.config(text="%s × %d" % (model["colour"], model["count"]),
+            found_lbl.config(text="%s × %d" % (g["colour"] or "?", model["count"]),
                              fg=OK_GREEN)
-            found_note.config(
-                text="Found on a %s cable. Each stripe is about %.0f px wide; the group "
-                     "is %.0f px long. If a colour is named wrongly, correct it here."
-                     % (model["body"], model["stripe_width"], model["span"]),
-                fg=TXT_FAINT)
+            unnamed = [what for what, key in (("cable", "body"), ("stripe", "colour"))
+                       if not g[key]]
+            if unnamed:
+                found_note.config(
+                    text="The %s colour is not close to any named colour. Choose it "
+                         "here; the check is taught the shade this part shows."
+                         % " and ".join(unnamed), fg=WARN)
+            else:
+                found_note.config(
+                    text="Each stripe is about %.0f px wide; the group is %.0f px long. "
+                         "If a colour is named wrongly, correct it here."
+                         % (model["stripe_width"], model["span"]), fg=TXT_FAINT)
         else:
             count_var.set("")
             found_lbl.config(text="—", fg=TXT_DIM)
@@ -3057,6 +3079,9 @@ def _open_stripe_teach(parent, part_number=None):
             text, fill = "GROUP %d — draw the stripes ROI round its stripes" % n, ui.ROW_BAND
         elif g["model"] is None:
             text, fill = "GROUP %d — %s" % (n, g["error"] or "no stripes found"), ui.DANGER_SOFT
+        elif not g["body"] or not g["colour"]:
+            text, fill = "GROUP %d — %d stripes found. Choose the colours (C)." % (
+                n, g["model"]["count"]), ui.ROW_BAND
         elif not _ready(g):
             text, fill = "GROUP %d — %d stripes found, %s expected" % (
                 n, g["model"]["count"], g["count"]), ui.DANGER_SOFT
@@ -3228,9 +3253,12 @@ def _open_stripe_teach(parent, part_number=None):
         else:
             btn_import.pack(side="left")
 
-    def _use_frame(img, label):
+    def _use_frame(img, label, frames=None):
+        # `frames` are all the pictures taken for this capture; the ROIs are
+        # drawn on the first, and every one of them is taught from
         size_was = None if state["frame"] is None else state["frame"].shape[:2]
         state["frame"], state["label"] = img, label
+        state["frames"] = frames or [img]
         live["on"] = False
         # Keep the boxes across captures of the same size; on a re-teach
         # start from the groups the part was taught with
@@ -3261,11 +3289,18 @@ def _open_stripe_teach(parent, part_number=None):
         s = stream["s"]
         if s is None:
             return
-        frame = s.latest() if live["on"] else s.read(timeout=3.0)
-        if frame is None:
+        # Several frames in a row, as the marker app teaches from several
+        # auto samples
+        win.config(cursor="watch")
+        win.update_idletasks()
+        try:
+            frames = stripe_check.capture_frames(s)
+        finally:
+            win.config(cursor="")
+        if not frames:
             messagebox.showwarning("Capture", "No frame from camera 2 yet.", parent=win)
             return
-        _use_frame(frame.copy(), "camera %d" % cam["index"])
+        _use_frame(frames[0], "camera %d" % cam["index"], frames)
 
     def _import():
         path = filedialog.askopenfilename(
@@ -3297,7 +3332,7 @@ def _open_stripe_teach(parent, part_number=None):
                     % (fw, fh, cam["width"], cam["height"]), parent=win):
                 return
         try:
-            stripe_check.teach(pno, state["frame"], [
+            stripe_check.teach(pno, state["frames"], [
                 {"roi": g["roi"], "area": g["area"], "body": g["body"],
                  "colour": g["colour"], "count": g["count"]} for g in groups])
         except (ValueError, OSError) as e:
