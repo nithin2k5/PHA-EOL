@@ -800,10 +800,12 @@ class EOLTesterGUI:
         return bool(self.lot_size)
 
     def start_test_click(self):
-        """Start a PLC test cycle on the loaded part.
+        """Start a test cycle on the loaded part.
 
-        Writes the part's program-select coil and Machine On, then watches
-        the PLC as for any cycle, so the result is scored and saved as usual.
+        The cameras check the cable first. Once they pass it, the part's
+        program-select coil and Machine On are written and the PLC is watched
+        as for any cycle, so the result is scored and saved as usual. A cable
+        the cameras fail is saved NG and never tested on the PLC.
         """
         if not self.employee_validation_complete:
             messagebox.showwarning("Start Test", "Enter your employee code first.")
@@ -823,11 +825,64 @@ class EOLTesterGUI:
         if not connected:
             messagebox.showerror("Start Test", "The PLC is not connected.")
             return
+        if self.camera_check_running:
+            self.safe_update_message("Checking the cable on the cameras - wait.", "red")
+            return
         # Before the PLC is told anything, so an aborted test never starts
         if not self.cameras_ready_for_test():
             return
 
         self.trace(f"START pressed for part {self.current_part_number}")
+        # A known-bad cable is checked by the PLC alone
+        if getattr(self, 'startingNGCableValidation', False) or \
+                getattr(self, 'endingNGCableValidation', False):
+            self.start_plc_test()
+            return
+
+        # The cameras check the cable first; the PLC test starts only once
+        # their verdicts are in, and not at all if one of them failed it
+        part = self.current_part_number
+        self.camera_checks_done = False
+        self.safe_update_message("Checking the cable on the cameras...", "blue")
+
+        def checked():
+            if self.current_part_number != part:
+                self.safe_update_message("The part changed during the camera check - "
+                                         "press START again.", "red")
+                return
+            if self.camera_failed_part():
+                self.save_camera_ng()
+            else:
+                self.start_plc_test()
+
+        self.after_camera_checks(checked)
+
+    def camera_failed_part(self):
+        """True if a camera the app checked judged this cable NG or ERROR.
+
+        A camera error fails the part as well: what it looks for was never
+        confirmed.
+        """
+        return (self.cam2Result in ("NG", "ERROR")
+                or (self.cam1_by_app and self.cam1Result in ("NG", "ERROR")))
+
+    def save_camera_ng(self):
+        """Save a cable the cameras failed as NG, without testing it on the PLC."""
+        self.trace(f"CAMERA NG - part {self.current_part_number} saved NG, PLC test not started")
+        self.log_operator_action("TEST_CAMERA_NG", "Failed on the cameras, PLC test not started")
+        self.reset_measurements()
+        self.generate_lot_and_traceability()
+        self.save_testing_data("NG")
+        self.update_charts()
+
+        def ready_for_next():
+            self.reset_test_parameters()
+            self.safe_update_message("Camera NG - cable saved as NG, not tested. "
+                                     "Load the next cable and press START.", "red")
+        self.root.after(1200, ready_for_next)
+
+    def start_plc_test(self):
+        """Tell the PLC to start testing the loaded part, and watch for its result."""
         # Each failed write says which coil it tried and what the PLC answered
         not_m_coil = "address missing or not an M coil (e.g. M1000)"
         failed = []
@@ -854,9 +909,6 @@ class EOLTesterGUI:
 
         self.log_operator_action("TEST_START", "Started from the START button")
         self.safe_update_message("Test started - waiting for the PLC...", "blue")
-        # The cable is in the fixture now, so check it on both cameras while
-        # the PLC runs the test
-        self.start_camera_checks()
         self.start_check_async()
 
     def create_footer(self):
@@ -2014,12 +2066,12 @@ class EOLTesterGUI:
         return "PASS" if result.ok else "NG" if result.judgement == "NG" else "ERROR"
 
     def start_camera_checks(self):
-        """Check the part on both cameras as its test starts.
+        """Check the part on both cameras, before its PLC test starts.
 
         Camera 1 looks for missing parts with the check taught for the part
         in Vision Settings; camera 2 checks the stripes. Both run on a worker
         thread so the window keeps painting, and their verdicts show as soon
-        as they are in, while the PLC carries on with the test. A part with
+        as they are in. A part with
         nothing taught for a camera isn't checked on it: camera 1 then keeps
         the PLC's verdict, and camera 2 shows OFF. Each camera's picture is
         kept either way.
@@ -2157,8 +2209,8 @@ class EOLTesterGUI:
     def after_camera_checks(self, then):
         """Call `then` once this test's camera checks are in.
 
-        They normally finish long before the PLC does. If the result comes
-        first, saving waits for them; if they never started, they run now.
+        START runs them before the PLC test. If a result comes in without
+        them, saving waits for them; if they never started, they run now.
         """
         if self.camera_checks_done:
             then()
@@ -4893,12 +4945,9 @@ class EOLTesterGUI:
                 messagebox.showwarning("Duplicate Code", 
                     f"Generated Traceability Code: {self.traceabilityCode} already exists. Saving as 'NG'.")
                 self.save_testing_data("NG")
-            elif (self.passCounter == len(self.deviceToRead)
-                  and self.cam2Result not in ("NG", "ERROR")
-                  and not (self.cam1_by_app and self.cam1Result in ("NG", "ERROR"))):
+            elif self.passCounter == len(self.deviceToRead) and not self.camera_failed_part():
                 # All tests passed, and each camera the app checked passed
-                # too, or had nothing to check. A camera error fails the part
-                # as well: what it looks for was never confirmed.
+                # too, or had nothing to check
                 saved = self.save_testing_data("OK")
                 # Print barcode if configured, and only once the test is in
                 # the database
