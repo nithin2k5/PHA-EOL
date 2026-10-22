@@ -15,17 +15,21 @@ whole frame when that isn't drawn either. Inside its region the part need
 not sit in a fixed place, and the cable may lie at any angle.
 
 Methodology:
-  - Teach: the operator boxes each stripe group on a good part, and may draw
-    a search region round it. Each group's colour, count, size and spacing
-    are read from its box and saved per part number. The box only says which
-    stripes to learn from.
-  - Inspect: pixels of the expected colour anywhere in the frame are grouped
-    into bands. Bands far from the taught stripe size, such as specks on the
-    background or a mat of the same colour, are dropped. Bands lying close
-    together form a group, and each group is counted along its own cable
-    direction, so stripes that touch still count separately.
-  - Result: OK if, for every taught group, some group of bands in its
-    region matches its count and length.
+  - Teach: the operator boxes each stripe group on a good part, with a little
+    cable either side, and may draw a search region round it. The cable is
+    followed through the box, and each group's colour, count, size and
+    spacing are read along it and saved per part number.
+  - Inspect: the cable is followed through the group's search region, or
+    round the box it was taught in, and only the cable is looked at, so
+    nothing on the bench beside it can count. Coloured stripes are where
+    their paint covers the cable; white and grey ones are where the cable
+    turns clearly paler.
+  - Result: OK if, for every taught group, the stripes along the cable match
+    its count, width and spread.
+
+Parts taught before stripes were read along the cable are still judged the
+old way, by pixels of their colour anywhere in the search region, until they
+are re-taught.
 
 Frames are enhanced (see enhance.py) before stripes are read from them, both
 when teaching and, for parts taught that way, when inspecting.
@@ -53,10 +57,12 @@ ROI_KEY = "cam2_roi"
 _ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
 _MODELS_DIR = os.path.join(_ROOT_DIR, "vision_models", "stripes")
 
-# Colours found anywhere by their own look (see colour_masks)
+# Colours with a look of their own (see colour_masks)
 MASK_COLOURS = ("white", "red", "yellow", "green", "blue", "purple")
-# Grey is found only along a cable boxed tightly, by being paler than the
-# cable, as white can be there too: grey anywhere else is half the picture
+# Coloured paint, found on the cable by its colour
+PAINT_COLOURS = tuple(c for c in MASK_COLOURS if c != "white")
+# Found on the cable by being paler than it: a white stripe on a black cable
+# can look only grey to the camera, and grey has no colour to find it by
 CABLE_COLOURS = ("white", "grey")
 COLOURS = MASK_COLOURS + ("grey",)
 
@@ -75,6 +81,9 @@ MIN_CABLE_CONTRAST = 15
 CABLE_CONTRAST_SHARE = 0.35
 # ... and colourless: a coloured mark on the cable is not a white stripe
 MAX_CABLE_WHITE_SATURATION = 60
+# Coloured stripes are where their paint covers at least this share of the
+# middle of the cable (see _paint_runs)
+MIN_CABLE_COVERAGE = 0.5
 # Paler stripes on a cable are named white when this bright, as white is
 # found anywhere (see colour_masks), and grey when darker
 MIN_WHITE_BRIGHTNESS = 185
@@ -420,27 +429,6 @@ def _colour_bands(masks: dict, colour: str, max_extent: float = 0.0) -> list:
     return _bands(mask, max_extent=max_extent)
 
 
-def dominant_colour(patch: np.ndarray) -> Tuple[Optional[str], int]:
-    """The stripe colour covering most of a patch, and how many pixels it has.
-
-    Only band-shaped patches count, so a background colour filling the whole
-    patch, or scattered specks, don't win.
-    """
-    masks = colour_masks(patch)
-    patch_area = patch.shape[0] * patch.shape[1]
-    best, best_area = None, 0
-    for colour in MASK_COLOURS:
-        bands = [b for b in _colour_bands(masks, colour) if b["area"] < patch_area * 0.5]
-        if not bands:
-            continue
-        biggest = max(b["area"] for b in bands)
-        # Specks next to real stripes are far smaller than them
-        area = sum(b["area"] for b in bands if b["area"] >= biggest * 0.25)
-        if area > best_area:
-            best, best_area = colour, area
-    return best, best_area
-
-
 def read_stripes(frame: np.ndarray, roi: dict, colour: Optional[str] = None,
                  count: Optional[int] = None) -> Tuple[dict, List[np.ndarray]]:
     """Read a good part's stripes from the box, without saving anything.
@@ -453,65 +441,9 @@ def read_stripes(frame: np.ndarray, roi: dict, colour: Optional[str] = None,
     """
     if roi["width"] < 8 or roi["height"] < 8:
         raise ValueError("The box is too small. Draw it round the whole stripe group.")
-    frame = enhance(frame)
-    patch, (x0, y0, _, _) = _crop(frame, roi, 0.0)
-
-    if colour is None:
-        colour, _ = dominant_colour(patch)
-        if colour is None:
-            # Nothing coloured: white or grey stripes, told apart by how
-            # pale they are along the cable
-            try:
-                return _read_cable(frame, roi, count)
-            except ValueError:
-                raise ValueError("No stripe colour found in the box.")
-    elif colour not in COLOURS:
+    if colour is not None and colour not in COLOURS:
         raise ValueError(f"Unknown stripe colour '{colour}'.")
-    # Grey is found only along the cable, in whatever box is drawn round it;
-    # white is too when the box is drawn tight round the cable
-    if colour == "grey" or (colour in CABLE_COLOURS and _is_cable_box(roi)):
-        return _read_cable(frame, roi, count, colour)
-
-    masks = colour_masks(patch)
-    bands = _colour_bands(masks, colour)
-    if not bands:
-        raise ValueError(f"No {colour} stripes found in the box.")
-    biggest = max(b["area"] for b in bands)
-    # The box is drawn round the stripes, so anything far smaller is a speck
-    bands = [b for b in bands if b["area"] >= biggest * 0.25]
-
-    axis = _cable_axis(bands)
-    runs = _runs(bands, axis)
-    # Most runs are single stripes, so the middle length is one stripe's
-    # width. If they all touch, the operator corrects the count.
-    width = float(np.median([e - s for s, e in runs]))
-    found, span = _count(runs, width)
-    if found == 0:
-        raise ValueError(f"No {colour} stripes found in the box.")
-    count = int(count) if count else found
-    if count != found:
-        # The operator corrected the count, so the runs weren't single
-        # stripes. Share the group out evenly; the gaps can't be told apart
-        # from the paint, so they count as part of each stripe.
-        width = span / count
-
-    model = {
-        "roi": {k: int(roi[k]) for k in ("x", "y", "width", "height")},
-        "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
-        "colour": colour,
-        "count": count,
-        "axis": [float(axis[0]), float(axis[1])],
-        "stripe_width": width,
-        "stripe_length": float(np.median(_stripe_lengths(
-            bands, axis, [r for r in runs if r[1] - r[0] > width * 0.35]))),
-        "span": span,
-        # Start of one stripe to the start of the next
-        "pitch": (span - width) / (count - 1) if count > 1 and count == found else 0.0,
-        "size_tolerance": SIZE_TOLERANCE,
-        "contrast": _contrast(cv2.cvtColor(patch, cv2.COLOR_BGR2LAB).astype(np.float32), bands),
-    }
-    boxes = [b["box"] + np.array([x0, y0], np.float32) for b in bands]
-    return model, boxes
+    return _read_cable(enhance(frame), roi, count, colour)
 
 
 def _contains(outer: dict, inner: dict) -> bool:
@@ -735,18 +667,19 @@ def _judge(masks: dict, lab: np.ndarray, colour: str, model: dict) -> Tuple[int,
     return best[2], False, best[3]
 
 
-# ── White or grey stripes along a cable ────────────────────────────────────
+# ── Stripes along a cable ──────────────────────────────────────────────────
 #
-# A white stripe on a black cable can look only grey to the camera, and far
-# darker than a pale bench or sheet behind the cable, so no brightness of its
-# own marks it as white. What does is that it is paler than the cable round
-# it. When the box is drawn tight round the cable, the cable is followed along
-# its length as its darkest band, and the brightness is read along the middle
-# of that band, clear of the background at the cable's edges. The stripes are
-# the stretches clearly paler than the cable either side of them. Nothing off
-# the cable is looked at, so pale things beside it can't count. Grey stripes
-# are found the same way; which of the two the part has is the operator's
-# word for them.
+# Stripes are looked for on the cable only. The cable is followed through the
+# box drawn round it as its darkest band, and only the middle of that band is
+# read, clear of the bench at the cable's edges, so nothing beside the cable,
+# such as a pale bench or a mark of the stripes' colour, can count.
+#
+# Coloured stripes are the stretches where their paint covers the middle of
+# the cable. A white stripe on a black cable can look only grey to the camera,
+# and far darker than a pale bench behind it, so no brightness of its own
+# marks it as white. What does is that it is paler than the cable round it:
+# white and grey stripes are the stretches clearly paler than the cable either
+# side of them, and named by how bright they are.
 
 CABLE_MODE = "cable"
 
@@ -866,6 +799,42 @@ def _white_only(runs: list, saturation: np.ndarray) -> list:
             if saturation[r[0]:r[1]].mean() <= MAX_CABLE_WHITE_SATURATION]
 
 
+def _paint(frame: np.ndarray, box: Tuple[int, int, int, int], along_x: bool) -> dict:
+    """Each paint colour inside a box, 1 where it is and 0 elsewhere, laid
+    out as _brightness() lays out the brightness."""
+    x, y, w, h = box
+    masks = colour_masks(frame[y:y + h, x:x + w])
+    return {c: (masks[c] > 0).astype(np.float32) if along_x
+            else (masks[c] > 0).T.astype(np.float32) for c in PAINT_COLOURS}
+
+
+def _paint_runs(coverage: np.ndarray) -> list:
+    """Stretches of the cable where one paint covers most of its middle.
+
+    Each is (start, end, share covered). Stretches running off either end
+    are left out, being cut off by the box.
+    """
+    n = len(coverage)
+    runs, start = [], None
+    for i, c in enumerate(np.append(coverage >= MIN_CABLE_COVERAGE, False)):
+        if c and start is None:
+            start = i
+        elif not c and start is not None:
+            if start > 0 and i < n and i - start >= 2:
+                runs.append((start, i, float(coverage[start:i].mean())))
+            start = None
+    return runs
+
+
+def _stripe_runs(colour: str, v: np.ndarray, sat: np.ndarray, paint: dict,
+                 centres: np.ndarray, rows: int, min_contrast: float) -> list:
+    """The stretches of the cable that are stripes of `colour`."""
+    if colour in CABLE_COLOURS:
+        runs = _cable_runs(_profile(v, centres, rows), min_contrast)
+        return _white_only(runs, _profile(sat, centres, rows))
+    return _paint_runs(_profile(paint[colour], centres, rows))
+
+
 def _clusters(runs: list, link: float) -> List[list]:
     """Stretches whose middles lie within `link` of the next, together."""
     clusters, current = [], []
@@ -955,9 +924,8 @@ def _run_outlines(runs: list, centres: np.ndarray, rows: int,
 
 def _read_cable(frame: np.ndarray, roi: dict, count: Optional[int],
                 colour: Optional[str] = None) -> Tuple[dict, List[np.ndarray]]:
-    """read_stripes() for white or grey stripes along a cable. Both are found
-    the same way; `colour` is what the operator calls them, or None to name
-    them by how pale they are.
+    """read_stripes() along the cable in the box. `colour` is what the
+    operator calls the stripes, or None to name them from what is found.
 
     The cable runs along the box's longer side. A box not drawn tight round
     the cable may be about as wide as it is long, so there the other way is
@@ -985,11 +953,29 @@ def _read_cable_along(frame: np.ndarray, roi: dict, count: Optional[int],
     if rows < 2:
         raise ValueError("No cable found in the box. Draw it round the cable.")
     centres = _track(v, rows)
-    profile = _profile(v, centres, rows)
-    runs = _cable_runs(profile, MIN_CABLE_CONTRAST)
-    runs = _white_only(runs, _profile(sat, centres, rows))
+    paint = _paint(frame, box, along_x)
+
+    def runs_of(c):
+        return _stripe_runs(c, v, sat, paint, centres, rows, MIN_CABLE_CONTRAST)
+
+    if colour is None:
+        # The paint covering most of the cable; with none, white or grey
+        # stripes, named by how bright they are
+        found = {c: runs_of(c) for c in PAINT_COLOURS}
+        painted = max(found, key=lambda c: sum(e - s for s, e, _ in found[c]))
+        if found[painted]:
+            colour, runs = painted, found[painted]
+        else:
+            runs = runs_of("white")
+            if not runs:
+                raise ValueError("No stripes found on the cable.")
+            profile = _profile(v, centres, rows)
+            top = np.median([profile[s:e].max() for s, e, _ in runs])
+            colour = "white" if top >= MIN_WHITE_BRIGHTNESS else "grey"
+    else:
+        runs = runs_of(colour)
     if not runs:
-        raise ValueError(f"No {colour or 'white or grey'} stripes found on the cable.")
+        raise ValueError(f"No {colour} stripes found on the cable.")
     # A box along the cable can take in other pale marks, such as where the
     # cable crosses a bracket. The stripes are the ones lying close together:
     # within half as far again as the closest two
@@ -998,10 +984,6 @@ def _read_cable_along(frame: np.ndarray, roi: dict, count: Optional[int],
         clusters = _clusters(runs, min(np.diff(mids)) * 1.5)
         wanted = int(count) if count else None
         runs = max(clusters, key=lambda c: (len(c) == wanted, len(c), sum(r[2] for r in c)))
-    if colour is None:
-        # As bright as white paint is found anywhere, or else grey
-        top = np.median([profile[s:e].max() for s, e, _ in runs])
-        colour = "white" if top >= MIN_WHITE_BRIGHTNESS else "grey"
     if count and int(count) != len(runs):
         raise ValueError(f"{len(runs)} {colour} stripes found together on the cable, "
                          f"not {int(count)}.")
@@ -1022,6 +1004,8 @@ def _read_cable_along(frame: np.ndarray, roi: dict, count: Optional[int],
         # Middle of one stripe to the middle of the next
         "pitch": float(np.mean(np.diff(mids))) if len(runs) > 1 else 0.0,
         "size_tolerance": SIZE_TOLERANCE,
+        # How much paler than the cable white or grey stripes are; for
+        # coloured ones, the share of the cable their paint covers
         "contrast": float(np.median([r[2] for r in runs])),
     }
     # How dark the cable is against what lies beside it, measured where a
@@ -1054,8 +1038,7 @@ def _cable_window(frame: np.ndarray, group: dict,
 
 
 def _inspect_cable(frame: np.ndarray, group: dict, region: Optional[dict]) -> GroupResult:
-    """_inspect_group() for white or grey stripes taught on a cable drawn
-    round tightly.
+    """_inspect_group() for stripes taught along the cable.
 
     The cable is followed through the window as the darkest band as thick as
     it was taught, and must be about as dark against what lies beside it as
@@ -1083,8 +1066,8 @@ def _inspect_cable(frame: np.ndarray, group: dict, region: Optional[dict]) -> Gr
 
     taught = group.get("contrast", 0.0)
     min_contrast = max(MIN_CABLE_CONTRAST * 0.8, CABLE_CONTRAST_SHARE * taught)
-    runs = _cable_runs(_profile(v, centres, rows), min_contrast)
-    runs = _white_only(runs, _profile(sat, centres, rows))
+    paint = _paint(frame, box, along_x)
+    runs = _stripe_runs(colour, v, sat, paint, centres, rows, min_contrast)
 
     tol = group.get("size_tolerance", SIZE_TOLERANCE)
     width = group["stripe_width"]
@@ -1114,6 +1097,14 @@ def _inspect_cable(frame: np.ndarray, group: dict, region: Optional[dict]) -> Gr
     result.count = count
     result.seen = "none" if not count else f"{colour} x{count}" + (
         " of the wrong size or spacing" if count == expected and not result.ok else "")
+    if not count:
+        # Name the paint that is there instead, so the operator sees
+        # "red x3", not just NG
+        for other in PAINT_COLOURS:
+            n = len(_paint_runs(_profile(paint[other], centres, rows)))
+            if other != colour and n:
+                result.seen = f"{other} x{n}"
+                break
     result.stripe_boxes = _run_outlines(best, centres, rows, box, along_x)
     return result
 
