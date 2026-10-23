@@ -95,7 +95,7 @@ LAMP_FAIL = '#FF4500'       # a failed step
 # the Test console. SERIES is assigned per channel in fixed order and never
 # cycled, so L1 and P1 keep their colour on every chart.
 CHART_SURFACE = '#000000'
-CHART_GRID = '#DCDCDC'       # Gainsboro
+CHART_GRID = '#3C3C3C'       # dim grey, faint on the black surface
 CHART_AXIS = '#DCDCDC'
 CHART_TEXT = '#FFFFFF'
 SERIES = ('#418CF0', '#FCB441', '#E0400A', '#056492')
