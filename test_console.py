@@ -1501,6 +1501,12 @@ class EOLTesterGUI:
     LOAD_COLORS = dict(zip(['L1', 'L2', 'L3', 'L4'], SERIES_COLORS))
     LENGTH_COLORS = dict(zip(['P1', 'P2', 'P3', 'P4'], SERIES_COLORS))
     CHART_GRID = ui.CHART_GRID
+    CHART_AXIS = ui.CHART_AXIS
+
+    def draw_axes(self, canvas, left, top, right, baseline):
+        """Solid x and y axis lines, brighter than the grid they sit on."""
+        canvas.create_line(left, top, left, baseline, fill=self.CHART_AXIS)
+        canvas.create_line(left, baseline, right, baseline, fill=self.CHART_AXIS)
 
     def draw_graph(self, canvas, names, colors, default_labels, title):
         """Draw one chart: title, grid, y-axis scale, plotted series and legend."""
@@ -1567,6 +1573,7 @@ class EOLTesterGUI:
                 label = str(default_labels[i])
             canvas.create_text(left_margin - 6, y, text=label, anchor="e",
                                fill='white', font=label_font)
+        self.draw_axes(canvas, left_margin, top_margin, plot_right, baseline)
 
         # Plot each series as a smooth curve.
         if bounds and point_count > 1:
@@ -1665,6 +1672,7 @@ class EOLTesterGUI:
             canvas.create_line(left_margin, y, plot_right, y, fill=self.CHART_GRID, dash=dash)
             canvas.create_text(left_margin - 6, y, text=f"{step * i:,}",
                                anchor="e", fill='white', font=label_font)
+        self.draw_axes(canvas, left_margin, top_margin, plot_right, baseline)
 
         # One slot per hour of the day; every other hour is labelled when
         # the slots get too narrow for all 24
