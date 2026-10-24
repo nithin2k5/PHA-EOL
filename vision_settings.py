@@ -3499,9 +3499,10 @@ def _open_stripe_teach(parent, part_number=None):
         reloaded = False
         if (all(g["roi"] is None for g in groups) and previous
                 and previous.get("frame_size") == [img.shape[1], img.shape[0]]):
+            # The colours are read afresh from the new picture, not carried
+            # over, so a colour named wrongly before is not taught again
             groups[:] = [_new_group(_as_box(g.get("inspection_region")), _as_box(g.get("roi")),
-                                    g.get("body_colour"), g.get("stripe_colour"),
-                                    g.get("stripe_count"))
+                                    count=g.get("stripe_count"))
                          for g in stripe_check.groups_of(previous)] or [_new_group()]
             reloaded = True
         for g in groups:
