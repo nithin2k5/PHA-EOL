@@ -44,7 +44,7 @@ import numpy as np
 from marker_engine import (FAIL, NO_CABLE, PASS, PresetStore, Recipe, SetupError,
                            detect, evaluate)
 from marker_engine.calibration import TeachSession
-from marker_engine.colors import nearest_colour_name
+from marker_engine.colors import ColourReference, nearest_colour_name
 from marker_engine.cycle import FrameResult, InspectionCycle
 from marker_engine.detection import PRESENT
 
@@ -66,6 +66,39 @@ ENGINE = "marker_engine"
 _PRESETS = PresetStore(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     "colour_presets.json"))
 COLOURS = tuple(_PRESETS.names())
+
+# Colours as camera 2 sees them, learnt from each part taught under the names
+# the operator confirmed, and kept on this machine. They replace the marker
+# app's values, which a different camera and light can put a name or more
+# away, so a colour corrected once is named rightly from then on.
+_LEARNT_COLOURS = os.path.join(_MODELS_DIR, "colours.json")
+
+
+def _load_learnt() -> List[dict]:
+    try:
+        with open(_LEARNT_COLOURS, "r") as f:
+            return list(json.load(f).get("colours", []))
+    except (OSError, ValueError):
+        return []
+
+
+for _ref in _load_learnt():
+    _PRESETS.put(ColourReference.from_dict(_ref))
+
+
+def _learn_colours(recipes: List[dict]):
+    """Keep the cable and stripe colours just taught as camera 2's own."""
+    learnt = {d["name"]: d for d in _load_learnt()}
+    for recipe in recipes:
+        for ref in (recipe.get("body_ref"), recipe.get("stripe_ref")):
+            if ref and ref.get("name") in COLOURS:
+                learnt[ref["name"]] = ref
+                _PRESETS.put(ColourReference.from_dict(ref))
+    os.makedirs(_MODELS_DIR, exist_ok=True)
+    with open(_LEARNT_COLOURS, "w") as f:
+        json.dump({"colours": list(learnt.values())}, f, indent=4)
+        f.write("\n")
+
 
 # The cable itself is only ever black or grey
 CABLE_COLOURS = ("black", "grey")
@@ -419,6 +452,7 @@ def teach(part_number: str, frames, groups: List[dict]) -> dict:
         "groups": recipes,
     }
     save_model(model)
+    _learn_colours(recipes)
     return model
 
 
