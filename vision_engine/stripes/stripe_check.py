@@ -48,7 +48,7 @@ from marker_engine.colors import nearest_colour_name
 from marker_engine.cycle import FrameResult, InspectionCycle
 from marker_engine.detection import PRESENT
 
-from .. import camera
+from .. import camera, captures
 from ..config import ROOT_DIR, load_camera_config
 
 CAMERA_SOURCE = "cam2"
@@ -569,7 +569,8 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
     if not groups:
         return _error(f"The stripe model for '{part_number}' has no stripe groups")
 
-    if frame is not None:
+    live = frame is None
+    if not live:
         fw, fh = model.get("frame_size", [frame.shape[1], frame.shape[0]])
         if (frame.shape[1], frame.shape[0]) != (fw, fh):
             return _error(f"This picture is {frame.shape[1]}x{frame.shape[0]}, "
@@ -605,6 +606,11 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
               for n, r in enumerate(results, start=1) if not r.ok]
     print(f"[STRIPES] {part_number}: {judgement} "
           f"({int((time.time() - start) * 1000)} ms)")
+    if judgement == "ERROR" and live:
+        # Kept as captured, so the frame can be judged again off the line
+        saved = captures.save_raw(frame, "CAM2", part_number)
+        if saved:
+            print(f"[STRIPES] {part_number}: frame saved to {saved}")
     boxes = [b for r in results for b in r.stripe_boxes]
     found_box = (cv2.boundingRect(np.vstack(boxes).astype(np.int32)) if boxes else None)
     return StripeResult(

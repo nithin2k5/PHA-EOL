@@ -81,6 +81,27 @@ def save(frame: np.ndarray, camera_name: str, part_number: str, verdict: str,
         return None
 
 
+def save_raw(frame: np.ndarray, camera_name: str, part_number: str) -> Optional[str]:
+    """Store a camera frame as it was captured, full size and unmarked, so a
+    result can be judged again from it. Returns its relative path."""
+    try:
+        now = datetime.now()
+        folder = os.path.join(CAPTURES_DIR, now.strftime("%Y-%m-%d"))
+        os.makedirs(folder, exist_ok=True)
+        safe_part = "".join(c if c.isalnum() or c in "-_." else "_" for c in part_number)
+        name = "%s_%s_%s_raw.png" % (now.strftime("%H%M%S_%f")[:-3], safe_part,
+                                     camera_name.lower().replace(" ", ""))
+        path = os.path.join(folder, name)
+        ok, data = cv2.imencode(".png", frame)
+        if not ok:
+            return None
+        data.tofile(path)
+        return os.path.relpath(path, _ROOT_DIR).replace("\\", "/")
+    except Exception as e:
+        print(f"[CAPTURE] could not save {camera_name} raw picture: {e}")
+        return None
+
+
 def full_path(relative: Optional[str]) -> Optional[str]:
     """Where a stored picture is on disk, or None if it is gone."""
     if not relative:
