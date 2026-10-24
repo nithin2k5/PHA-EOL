@@ -842,17 +842,19 @@ def render(parent):
 
     # ── Navbar: a tab for each camera ──────────────────────────────────────
     # Each camera has a check of its own, so each has a page of its own. The
-    # bar shows which is open, a dot for how each camera is, and the open
-    # camera's state in words.
-    nav = tk.Frame(content, bg=ui.NAVY, height=48)
-    nav.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+    # bar shows which is open, underlined, a dot for how each camera is, and
+    # the open camera's state in words at the right.
+    nav_wrap = tk.Frame(content, bg=LINE)
+    nav_wrap.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+    nav = tk.Frame(nav_wrap, bg=PANEL, height=54)
+    nav.pack(fill="x", padx=1, pady=1)
     nav.pack_propagate(False)
 
-    pill = tk.Frame(nav, bg=ui.NAVY)
+    pill = tk.Frame(nav, bg=ui.SUBTLE, padx=12, pady=5)
     pill.pack(side="right", padx=14)
-    pill_dot = tk.Label(pill, text="●", bg=ui.NAVY, fg=TXT_FAINT, font=(FONT, 14))
-    pill_dot.pack(side="left", padx=(0, 7))
-    pill_txt = tk.Label(pill, text="Checking camera…", bg=ui.NAVY, fg=ui.TEXT_ON_DARK,
+    pill_dot = tk.Label(pill, text="●", bg=ui.SUBTLE, fg=TXT_FAINT, font=(FONT, 12))
+    pill_dot.pack(side="left", padx=(0, 6))
+    pill_txt = tk.Label(pill, text="Checking camera…", bg=ui.SUBTLE, fg=TXT,
                         font=(FONT, 11, "bold"))
     pill_txt.pack(side="left")
 
@@ -862,17 +864,22 @@ def render(parent):
     shown = {"tab": _last_tab["tab"]}
 
     def _tab(number, title, subtitle):
-        tab = tk.Frame(nav, bg=ui.NAVY, cursor="hand2", padx=16)
-        tab.pack(side="left", fill="y", padx=(6 if number == 1 else 2, 0), pady=6)
-        dot = tk.Label(tab, text="●", bg=ui.NAVY, fg=TXT_FAINT, font=(FONT, 12))
+        tab = tk.Frame(nav, bg=PANEL, cursor="hand2")
+        tab.pack(side="left", fill="y", padx=(8 if number == 1 else 0, 0))
+        # The open tab is underlined
+        mark = tk.Frame(tab, bg=PANEL, height=4)
+        mark.pack(side="bottom", fill="x")
+        row = tk.Frame(tab, bg=PANEL, padx=18)
+        row.pack(fill="both", expand=True)
+        dot = tk.Label(row, text="●", bg=PANEL, fg=TXT_FAINT, font=(FONT, 12))
         dot.pack(side="left", padx=(0, 8))
-        name = tk.Label(tab, text=title, bg=ui.NAVY, fg=ui.TEXT_ON_DARK,
-                        font=(FONT, 12, "bold"))
+        name = tk.Label(row, text=title, bg=PANEL, fg=ACCENT, font=(FONT, 13, "bold"))
         name.pack(side="left")
-        sub = tk.Label(tab, text=subtitle, bg=ui.NAVY, fg=ui.ACCENT_SOFT, font=(FONT, 10))
-        sub.pack(side="left", padx=(8, 0))
-        tabs[number] = {"frame": tab, "dot": dot, "name": name, "sub": sub, "hover": False}
-        for w_ in (tab, dot, name, sub):
+        sub = tk.Label(row, text=subtitle, bg=PANEL, fg=TXT_DIM, font=(FONT, 10))
+        sub.pack(side="left", padx=(10, 0))
+        tabs[number] = {"frame": tab, "row": row, "mark": mark, "dot": dot, "name": name,
+                        "sub": sub, "hover": False}
+        for w_ in (tab, row, dot, name, sub):
             w_.bind("<Button-1>", lambda e, n=number: _show_tab(n))
             w_.bind("<Enter>", lambda e, n=number: _hover_tab(n, True))
             w_.bind("<Leave>", lambda e, n=number: _hover_tab(n, False))
@@ -886,11 +893,11 @@ def render(parent):
             return
         for number, t in tabs.items():
             active = number == shown["tab"]
-            fill = ui.ACCENT_FILL if active else (ui.ACCENT_ACTIVE if t["hover"] else ui.NAVY)
-            for w_ in (t["frame"], t["dot"], t["name"], t["sub"]):
+            fill = ui.ACCENT_SOFT if t["hover"] and not active else PANEL
+            for w_ in (t["frame"], t["row"], t["dot"], t["name"], t["sub"]):
                 w_.config(bg=fill)
-            t["name"].config(fg=ui.TEXT_ON_ACCENT if active else ui.TEXT_ON_DARK)
-            t["sub"].config(fg=ui.TEXT_ON_ACCENT if active else ui.ACCENT_SOFT)
+            t["mark"].config(bg=ui.ACCENT_FILL if active else fill)
+            t["name"].config(fg=ACCENT if active else TXT_DIM)
             t["dot"].config(fg=cam_states[number][1])
         text, color = cam_states[shown["tab"]]
         pill_txt.config(text=text)
