@@ -426,6 +426,26 @@ def _judge(frame: np.ndarray, recipe: Recipe):
     return m, evaluate(m, turned, _PRESETS)
 
 
+# ── Terminal log ────────────────────────────────────────────────────────────
+# What the engine saw, printed as it judges, so a result on the line can be
+# followed frame by frame.
+
+def _log_frame(part_number: str, n: int, seq, m, verdict):
+    stripes = ", ".join("%s %.0fpx" % (st.colour_name or "?", st.width_px)
+                        for st in m.stripes) or "none"
+    print(f"[STRIPES] {part_number} G{n} frame {seq}: {verdict.status} | "
+          f"cable {m.presence} {m.cable_width_px:.1f}px at {m.angle_deg:.1f}deg | "
+          f"stripes {len(m.stripes)}: {stripes}"
+          + (f" | {'; '.join(verdict.reasons)}" if verdict.status != PASS else ""))
+
+
+def _log_group(part_number: str, n: int, result: "GroupResult", extra: str = ""):
+    print(f"[STRIPES] {part_number} G{n} result: {result.status} - expected "
+          f"{result.colour} x{result.expected}, found {result.seen}{extra}")
+    for reason in result.reasons:
+        print(f"[STRIPES]     {reason}")
+
+
 def _group_result(recipe: Recipe, m, verdict, frame_h: int) -> GroupResult:
     result = GroupResult(ok=verdict.status == PASS, colour=recipe.stripe_colour,
                          expected=recipe.stripe_count, region=tuple(recipe.roi),
@@ -439,10 +459,11 @@ def _group_result(recipe: Recipe, m, verdict, frame_h: int) -> GroupResult:
     return result
 
 
-def _inspect_still(frame: np.ndarray, groups: List[Recipe]) -> List[GroupResult]:
+def _inspect_still(part_number: str, frame: np.ndarray,
+                   groups: List[Recipe]) -> List[GroupResult]:
     """Judge each group on one still picture."""
     results = []
-    for recipe in groups:
+    for n, recipe in enumerate(groups, start=1):
         try:
             m, verdict = _judge(frame, recipe)
         except SetupError as e:
@@ -450,12 +471,14 @@ def _inspect_still(frame: np.ndarray, groups: List[Recipe]) -> List[GroupResult]
                                        expected=recipe.stripe_count,
                                        region=tuple(recipe.roi), seen="not judged",
                                        status="ERROR", reasons=[str(e)]))
-            continue
-        results.append(_group_result(recipe, m, verdict, frame.shape[0]))
+        else:
+            _log_frame(part_number, n, "still", m, verdict)
+            results.append(_group_result(recipe, m, verdict, frame.shape[0]))
+        _log_group(part_number, n, results[-1])
     return results
 
 
-def _inspect_live(stream, groups: List[Recipe], frame_size):
+def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
     """Judge each group with the engine's inspection cycle on camera 2.
 
     As in the marker app, a result needs several fresh frames in a row with
@@ -492,6 +515,7 @@ def _inspect_live(stream, groups: List[Recipe], frame_size):
                                       region=tuple(recipe.roi), seen="not judged",
                                       status="ERROR", reasons=[str(e)])
                 continue
+            _log_frame(part_number, i + 1, count, m, verdict)
             res = cycle.on_frame(FrameResult(count, now, m, verdict, frame), now) \
                 or cycle.tick(now)
             if res is not None:
@@ -508,12 +532,15 @@ def _inspect_live(stream, groups: List[Recipe], frame_size):
     shown_frame = (first[0].frame.image if isinstance(first, tuple) and first[0].frame
                    is not None else frame)
     results = []
-    for recipe, d in zip(groups, done):
+    for n, (recipe, d) in enumerate(zip(groups, done), start=1):
         if isinstance(d, GroupResult):
             results.append(d)
+            _log_group(part_number, n, d)
             continue
         res, m = d
         results.append(_group_result(recipe, m, res.verdict, shown_frame.shape[0]))
+        _log_group(part_number, n, results[-1],
+                   f" ({res.frames_used} frames: {', '.join(res.frame_statuses) or 'none'})")
     return results, shown_frame
 
 
@@ -526,6 +553,7 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
     start = time.time()
 
     def _error(msg: str) -> StripeResult:
+        print(f"[STRIPES] {part_number}: ERROR - {msg}")
         return StripeResult(
             ok=False, judgement="ERROR", part_number=part_number, error=msg,
             processing_time_ms=int((time.time() - start) * 1000),
@@ -546,14 +574,15 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
         if (frame.shape[1], frame.shape[0]) != (fw, fh):
             return _error(f"This picture is {frame.shape[1]}x{frame.shape[0]}, "
                           f"but this part was taught at {fw}x{fh}.")
-        results = _inspect_still(frame, groups)
+        results = _inspect_still(part_number, frame, groups)
     else:
         index, width, height = camera_settings()
         stream = camera.acquire(index, width, height) if index >= 0 else None
         if stream is None:
             return _error("Camera 2 not available")
         try:
-            results, frame = _inspect_live(stream, groups, model["frame_size"])
+            results, frame = _inspect_live(part_number, stream, groups,
+                                           model["frame_size"])
         finally:
             stream.release()
         if results is None:
@@ -574,6 +603,8 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
               + f"Expected {r.colour} x{r.expected}, found {r.seen}"
               + (f" ({r.reasons[0]})" if r.reasons else "")
               for n, r in enumerate(results, start=1) if not r.ok]
+    print(f"[STRIPES] {part_number}: {judgement} "
+          f"({int((time.time() - start) * 1000)} ms)")
     boxes = [b for r in results for b in r.stripe_boxes]
     found_box = (cv2.boundingRect(np.vstack(boxes).astype(np.int32)) if boxes else None)
     return StripeResult(
