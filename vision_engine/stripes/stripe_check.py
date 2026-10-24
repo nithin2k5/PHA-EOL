@@ -67,6 +67,9 @@ _PRESETS = PresetStore(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     "colour_presets.json"))
 COLOURS = tuple(_PRESETS.names())
 
+# The cable itself is only ever black or grey
+CABLE_COLOURS = ("black", "grey")
+
 # Frames taken from camera 2 for teaching a good part, as the marker app
 # takes several auto samples so the tolerances cover frame-to-frame noise
 TEACH_FRAMES = 5
@@ -323,8 +326,9 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
                count: Optional[int] = None) -> Tuple[dict, List[np.ndarray]]:
     """What the engine sees of one group on a good part, without saving it.
 
-    `roi` is the stripes ROI and `area` the cable ROI round it. Returns what was read, with "body" and "colour" named from the
-    engine's colours unless given, "count", "stripe_width" and "span", and the
+    `roi` is the stripes ROI and `area` the cable ROI round it. Returns what
+    was read, with "body", the nearer of CABLE_COLOURS, and "colour" named
+    from the engine's colours unless given, "count", "stripe_width" and "span", and the
     outline of each stripe in frame coordinates. With `count`, that many
     stripes must be found. Raises ValueError with an operator-readable reason
     when the group can't be taught from this picture.
@@ -355,7 +359,8 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
 
     names = Counter(nearest_colour_name(st.lab, refs)[0] for st in m.stripes)
     found = {
-        "body": body or _named(nearest_colour_name(m.body_lab, refs)[0]),
+        "body": body or min(CABLE_COLOURS,
+                            key=lambda name: _PRESETS.get(name).distance(m.body_lab)),
         "colour": colour or _named(names.most_common(1)[0][0]),
         "count": len(m.stripes),
         "stripe_width": float(np.median([st.width_px for st in m.stripes])),

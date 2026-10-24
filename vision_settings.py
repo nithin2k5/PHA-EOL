@@ -3120,7 +3120,7 @@ def _open_stripe_teach(parent, part_number=None):
 
     body_var = tk.StringVar()
     cmb_body = ttk.Combobox(_pick_row("Cable"), textvariable=body_var, state="readonly",
-                            values=list(stripe_check.COLOURS), width=12,
+                            values=list(stripe_check.CABLE_COLOURS), width=12,
                             font=(FONT, 11))
     cmb_body.pack(side="left")
     pick_row = _pick_row("Stripes")
