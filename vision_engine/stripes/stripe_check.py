@@ -76,6 +76,11 @@ TEACH_FRAMES = 5
 MIN_CABLE_BOX = (20, 12)
 MIN_STRIPE_BOX = 8
 
+# The thinnest cable the engine looks for, as a share of the cable ROI's
+# short side. The marker app's ROI hugs the cable, but here it takes in the
+# bench above and below, where a thin wire may be only a few percent of it.
+MIN_CABLE_WIDTH = 0.03
+
 
 @dataclass
 class GroupResult:
@@ -295,7 +300,8 @@ def _recipe(name: str, frame: np.ndarray, group: dict) -> Recipe:
                   stripe_colour=group.get("colour") or "white",
                   stripe_count=int(group.get("count") or 1),
                   roi=_rect(group["area"]), inspection_region=_rect(group["roi"]),
-                  image_size=(fw, fh))
+                  image_size=(fw, fh),
+                  detection={"min_cable_width_frac": MIN_CABLE_WIDTH})
 
 
 def _check_boxes(box: Optional[dict], area: Optional[dict]):
