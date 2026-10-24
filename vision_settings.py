@@ -2967,10 +2967,12 @@ def _open_stripe_teach(parent, part_number=None):
     def _new_group(roi=None, area=None, body=None, colour=None, count=None):
         # "area" is the cable ROI and "roi" the stripes ROI inside it;
         # "body", "colour" and "count" are what the check will expect, kept
-        # when an ROI is redrawn; "model" and "outlines" are what was read
-        # from the ROIs
+        # when an ROI is redrawn; "chosen" holds which of the colours the
+        # operator picked, the others being named afresh from each picture;
+        # "model" and "outlines" are what was read from the ROIs
         return {"roi": roi, "area": area, "body": body, "colour": colour,
-                "count": count, "model": None, "outlines": [], "error": None}
+                "count": count, "chosen": set(), "model": None, "outlines": [],
+                "error": None}
 
     groups = [_new_group()]
     # The group being filled in, or None when none is
@@ -3356,15 +3358,16 @@ def _open_stripe_teach(parent, part_number=None):
         g["model"], g["outlines"], g["error"] = None, [], None
         if state["frame"] is None or g["roi"] is None or g["area"] is None:
             return
+        chosen = {key: g[key] if key in g["chosen"] else None for key in ("body", "colour")}
         try:
             g["model"], g["outlines"] = stripe_check.read_group(
-                state["frame"], g["roi"], g["area"], body=g["body"], colour=g["colour"])
+                state["frame"], g["roi"], g["area"], **chosen)
         except ValueError as e:
             g["error"] = str(e)
             return
         # Named from what was seen until the operator chooses otherwise
-        g["body"] = g["body"] or g["model"]["body"]
-        g["colour"] = g["colour"] or g["model"]["colour"]
+        g["body"] = g["model"]["body"]
+        g["colour"] = g["model"]["colour"]
         g["count"] = g["count"] or g["model"]["count"]
 
     def _refresh_all():
@@ -3463,8 +3466,10 @@ def _open_stripe_teach(parent, part_number=None):
         g = _group()
         if g is None:
             return
-        g["body"] = body_var.get() or None
-        g["colour"] = colour_var.get() or None
+        for key, var in (("body", body_var), ("colour", colour_var)):
+            if (var.get() or None) != g[key]:
+                g[key] = var.get() or None
+                g["chosen"].add(key)
         _refresh_all()
 
     def _set_live(on):

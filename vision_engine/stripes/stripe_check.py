@@ -44,7 +44,7 @@ import numpy as np
 from marker_engine import (FAIL, NO_CABLE, PASS, PresetStore, Recipe, SetupError,
                            detect, evaluate)
 from marker_engine.calibration import TeachSession
-from marker_engine.colors import ColourReference, nearest_colour_name
+from marker_engine.colors import ColourReference
 from marker_engine.cycle import FrameResult, InspectionCycle
 from marker_engine.detection import PRESENT
 
@@ -63,8 +63,10 @@ ENGINE = "marker_engine"
 # marker app. The cable and the stripes are taught from the good part, so
 # these name what was seen, and a stripe much nearer another colour than the
 # taught one can't pass.
-_PRESETS = PresetStore(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "colour_presets.json"))
+_PRESETS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "colour_presets.json")
+_PRESETS = PresetStore(_PRESETS_FILE)
+_SHIPPED = PresetStore(_PRESETS_FILE)
 COLOURS = tuple(_PRESETS.names())
 
 # Colours as camera 2 sees them, learnt from each part taught under the names
@@ -74,10 +76,19 @@ COLOURS = tuple(_PRESETS.names())
 _LEARNT_COLOURS = os.path.join(_MODELS_DIR, "colours.json")
 
 
+def _fits(ref: dict) -> bool:
+    """True if a shade can be the colour it is named: a coloured shade can't
+    be black, grey or white, nor a colourless one red or yellow. A part saved
+    under a wrong name would otherwise teach camera 2 that name for good."""
+    shipped = _SHIPPED.get(ref.get("name"))
+    return (shipped is not None
+            and ColourReference.from_dict(ref).achromatic == shipped.achromatic)
+
+
 def _load_learnt() -> List[dict]:
     try:
         with open(_LEARNT_COLOURS, "r") as f:
-            return list(json.load(f).get("colours", []))
+            return [d for d in json.load(f).get("colours", []) if _fits(d)]
     except (OSError, ValueError):
         return []
 
@@ -90,8 +101,11 @@ def _learn_colours(recipes: List[dict]):
     """Keep the cable and stripe colours just taught as camera 2's own."""
     learnt = {d["name"]: d for d in _load_learnt()}
     for recipe in recipes:
+        # A cable and stripes under one name are two shades; neither is kept
+        if recipe.get("body_colour") == recipe.get("stripe_colour"):
+            continue
         for ref in (recipe.get("body_ref"), recipe.get("stripe_ref")):
-            if ref and ref.get("name") in COLOURS:
+            if ref and _fits(ref):
                 learnt[ref["name"]] = ref
                 _PRESETS.put(ColourReference.from_dict(ref))
     os.makedirs(_MODELS_DIR, exist_ok=True)
@@ -380,9 +394,10 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
     """What the engine sees of one group on a good part, without saving it.
 
     `roi` is the stripes ROI and `area` the cable ROI round it. Returns what
-    was read, with "body", the nearer of CABLE_COLOURS, and "colour" named
-    from the engine's colours unless given, "count", "stripe_width" and "span", and the
-    outline of each stripe in frame coordinates. With `count`, that many
+    was read, with "body", the nearer of CABLE_COLOURS, and "colour", the
+    nearest of the engine's colours to most stripes, unless given, "count",
+    "stripe_width" and "span", and the outline of each stripe in frame
+    coordinates. With `count`, that many
     stripes must be found. Raises ValueError with an operator-readable reason
     when the group can't be taught from this picture.
     """
@@ -404,17 +419,14 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
         raise ValueError("%d stripes found, but %d are expected. Check the ROIs and the "
                          "lighting; stripes that touch can't be told apart."
                          % (len(m.stripes), count))
+    # The nearest name, even one the shade is outside of: the operator
+    # confirms it, and the check is taught the shade the part shows
     refs = _PRESETS.all()
-
-    def _named(name):
-        # None when no colour, or more than one, fits what was seen
-        return None if name == "unknown" or "|" in name else name
-
-    names = Counter(nearest_colour_name(st.lab, refs)[0] for st in m.stripes)
+    names = Counter(min(refs, key=lambda ref: ref.distance(st.lab)).name for st in m.stripes)
     found = {
         "body": body or min(CABLE_COLOURS,
                             key=lambda name: _PRESETS.get(name).distance(m.body_lab)),
-        "colour": colour or _named(names.most_common(1)[0][0]),
+        "colour": colour or names.most_common(1)[0][0],
         "count": len(m.stripes),
         "stripe_width": float(np.median([st.width_px for st in m.stripes])),
         "span": float(m.stripes[-1].end - m.stripes[0].start),
