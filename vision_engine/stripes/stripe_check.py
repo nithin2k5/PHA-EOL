@@ -340,6 +340,26 @@ def _recipe(name: str, frame: np.ndarray, group: dict) -> Recipe:
                   detection={"min_cable_width_frac": MIN_CABLE_WIDTH})
 
 
+def _with_pitch(frame: np.ndarray, recipe: Recipe) -> Recipe:
+    """The recipe with its stripes' spacing set, as seen in `frame`.
+
+    Until a part is taught the engine has no spacing to keep the stripe group
+    by, so a mark well away from the stripes, such as where the cable meets a
+    connector, counts as one more. The closest two marks found give the
+    spacing; with it the engine leaves out what lies apart from the group, as
+    it does on the line.
+    """
+    turned_frame, turned = _turn(frame, recipe)
+    try:
+        m = detect(turned_frame, turned)
+    except SetupError:
+        return recipe
+    if len(m.stripes) >= 2:
+        gaps = np.diff(sorted(st.centre_px for st in m.stripes))
+        recipe.geometry["expected_spacing_px"] = round(float(gaps.min()), 1)
+    return recipe
+
+
 def _check_boxes(box: Optional[dict], area: Optional[dict]):
     if area is None:
         raise ValueError("Draw the cable ROI.")
@@ -367,7 +387,7 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
     when the group can't be taught from this picture.
     """
     _check_boxes(roi, area)
-    recipe = _recipe("read", frame, {"roi": roi, "area": area})
+    recipe = _with_pitch(frame, _recipe("read", frame, {"roi": roi, "area": area}))
     turned_frame, turned = _turn(frame, recipe)
     try:
         m = detect(turned_frame, turned)
@@ -426,7 +446,7 @@ def teach(part_number: str, frames, groups: List[dict]) -> dict:
             _check_boxes(group.get("roi"), group.get("area"))
             if not group.get("body") or not group.get("colour") or not group.get("count"):
                 raise ValueError("Choose the cable colour, stripe colour and count.")
-            recipe = _recipe(f"{part_number} G{n}", frames[0], group)
+            recipe = _with_pitch(frames[0], _recipe(f"{part_number} G{n}", frames[0], group))
             session = TeachSession()
             first_error = None
             for frame in frames:
