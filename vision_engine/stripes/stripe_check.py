@@ -47,6 +47,7 @@ from marker_engine.calibration import TeachSession
 from marker_engine.colors import ColourReference
 from marker_engine.cycle import FrameResult, InspectionCycle
 from marker_engine.detection import PRESENT
+from marker_engine.evaluation import INDETERMINATE
 
 from .. import camera, captures
 from ..config import ROOT_DIR, load_camera_config
@@ -145,6 +146,7 @@ class GroupResult:
     stripe_boxes: List[np.ndarray] = field(default_factory=list)
     status: str = ""                # the engine's verdict, e.g. "FAIL"
     reasons: List[str] = field(default_factory=list)
+    judgement: str = "ERROR"        # "OK", "NG", or "ERROR" when it couldn't be judged
 
 
 @dataclass
@@ -166,6 +168,7 @@ class StripeResult:
     found_box: Optional[Tuple[int, int, int, int]] = None    # round the stripes found
     frame: Optional[np.ndarray] = None
     groups: List[GroupResult] = field(default_factory=list)
+    no_cable: bool = False          # an ERROR for want of a cable in the fixture
 
 
 # ── Model storage ───────────────────────────────────────────────────────────
@@ -522,10 +525,42 @@ def _log_group(part_number: str, n: int, result: "GroupResult", extra: str = "")
         print(f"[STRIPES]     {reason}")
 
 
-def _group_result(recipe: Recipe, m, verdict, frame_h: int) -> GroupResult:
+def _picture_fault(verdict) -> bool:
+    """True when a frame couldn't be judged for the picture itself: blur,
+    glare, something over the cable, the lighting, a cable not clearly there.
+
+    The engine gives those before it compares anything, so they have no
+    checks; a colour it doubts is INDETERMINATE after the checks.
+    """
+    return verdict.status == INDETERMINATE and not verdict.checks
+
+
+def _judgement(status: str, verdicts) -> str:
+    """OK, NG or ERROR for one group from the engine's status and the
+    verdicts of the frames it was judged on.
+
+    A part that doesn't match is NG: a wrong colour, count or spacing, a
+    stripe colour in doubt, or frames that disagree on the part. ERROR is
+    for what is outside the part: no cable in the fixture, a picture that
+    can't be judged, a camera that stalls or a cable that won't keep still.
+    """
+    if status == PASS:
+        return "OK"
+    if status == FAIL:
+        return "NG"
+    if status == INDETERMINATE and verdicts and not any(
+            _picture_fault(v) or v.status == NO_CABLE for v in verdicts):
+        return "NG"
+    return "ERROR"
+
+
+def _group_result(recipe: Recipe, m, verdict, frame_h: int, verdicts=None) -> GroupResult:
+    """`verdicts` are those of the frames judged, by default `verdict` alone."""
     result = GroupResult(ok=verdict.status == PASS, colour=recipe.stripe_colour,
                          expected=recipe.stripe_count, region=tuple(recipe.roi),
-                         status=verdict.status, reasons=list(verdict.reasons))
+                         status=verdict.status, reasons=list(verdict.reasons),
+                         judgement=_judgement(verdict.status,
+                                              [verdict] if verdicts is None else verdicts))
     if m is not None:
         result.count = len(m.stripes)
         result.seen = _seen(m)
@@ -569,6 +604,8 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
         cycle.set_recipe(recipe.name, recipe.version)
         cycles.append(cycle)
     done = [None] * len(groups)
+    # Each group's verdict on every frame fed to its cycle
+    fed = [[] for _ in groups]
     frame, count = stream.read_after(0, timeout=5.0)
     started = time.time()
     for cycle in cycles:
@@ -592,6 +629,7 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
                                       status="ERROR", reasons=[str(e)])
                 continue
             _log_frame(part_number, i + 1, count, m, verdict)
+            fed[i].append(verdict)
             res = cycle.on_frame(FrameResult(count, now, m, verdict, frame), now) \
                 or cycle.tick(now)
             if res is not None:
@@ -614,7 +652,11 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
             _log_group(part_number, n, d)
             continue
         res, m = d
-        results.append(_group_result(recipe, m, res.verdict, shown_frame.shape[0]))
+        # A result is given on the last frames fed, all in a row; with fewer
+        # than the cycle needs, it timed out with no steady set
+        steady = res.frames_used >= cycles[n - 1].cfg["frames_required"]
+        verdicts = fed[n - 1][-res.frames_used:] if steady else []
+        results.append(_group_result(recipe, m, res.verdict, shown_frame.shape[0], verdicts))
         _log_group(part_number, n, results[-1],
                    f" ({res.frames_used} frames: {', '.join(res.frame_statuses) or 'none'})")
     return results, shown_frame
@@ -669,10 +711,11 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
     several = len(results) > 1
 
     # A wrong part is NG; a group that couldn't be judged makes it an ERROR
-    # unless another group is clearly wrong
+    # unless another group is wrong. With no cable there is no part to judge.
+    no_cable = any(r.status == NO_CABLE for r in results)
     if ok:
         judgement = "OK"
-    elif any(r.status in (FAIL, NO_CABLE) for r in results):
+    elif not no_cable and any(r.judgement == "NG" for r in results):
         judgement = "NG"
     else:
         judgement = "ERROR"
@@ -696,6 +739,7 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
         count=sum(r.count for r in results),
         seen=" + ".join(r.seen for r in results),
         processing_time_ms=int((time.time() - start) * 1000),
-        error=None if ok else "; ".join(failed),
+        error=None if ok else "No cable in the fixture" if no_cable else "; ".join(failed),
         stripe_boxes=boxes, found_box=found_box, frame=frame, groups=results,
+        no_cable=no_cable,
     )

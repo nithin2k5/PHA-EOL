@@ -3842,7 +3842,7 @@ def _open_stripe_test(parent, part_number):
             view.set_frames([
                 ({"x": g.region[0], "y": g.region[1], "width": g.region[2],
                   "height": g.region[3]},
-                 OK_GREEN if g.ok else NG_RED,
+                 _VERDICT_INK[g.judgement],
                  ("G%d " % n if several else "") + g.seen.replace(" x", " × "))
                 for n, g in enumerate(result.groups, start=1) if g.region])
             view.set_hint("Each group was judged in its own cable ROI")
@@ -3857,6 +3857,9 @@ def _open_stripe_test(parent, part_number):
                      "it from the same distance as when it was taught, then re-teach it "
                      "if it still fails.",
                 fg=WARN)
+        elif result.no_cable:
+            hint.config(text="No cable was found in the fixture — place one and run again.",
+                        fg=WARN)
         elif result.judgement == "ERROR":
             hint.config(text="The picture couldn't be judged reliably — fix the cause "
                              "above and run again. A part taught with the earlier stripe "

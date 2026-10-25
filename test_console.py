@@ -535,6 +535,7 @@ class EOLTesterGUI:
         self.camera_checks_done = False     # this test's checks are in
         self.after_camera_checks_do = None  # waiting for them, to save the part
         self.cam1_by_app = False            # camera 1 judged here, not by the PLC
+        self.cam2_no_cable = False          # camera 2 found no cable in the fixture
         self.resetPLCOnFormClosing = False
         self.machineOnPLCCoilAddress = ""
         self.alertOnPLCCoilAddress = ""
@@ -806,7 +807,8 @@ class EOLTesterGUI:
         The cameras check the cable first. Once they pass it, the part's
         program-select coil and Machine On are written and the PLC is watched
         as for any cycle, so the result is scored and saved as usual. A cable
-        the cameras fail is saved NG and never tested on the PLC.
+        the cameras fail is saved NG and never tested on the PLC. With no
+        cable in the fixture nothing is saved, and the test stops.
         """
         if not self.employee_validation_complete:
             messagebox.showwarning("Start Test", "Enter your employee code first.")
@@ -851,7 +853,13 @@ class EOLTesterGUI:
                 self.safe_update_message("The part changed during the camera check - "
                                          "press START again.", "red")
                 return
-            if self.camera_failed_part():
+            if self.cam2_no_cable:
+                # Nothing there to fail; the pop-up has said so
+                self.trace(f"NO CABLE - part {part}, test not started")
+                self.log_operator_action("TEST_NO_CABLE", "Camera 2 found no cable, test not started")
+                self.safe_update_message("No cable in the fixture - place the cable and "
+                                         "press START again.", "red")
+            elif self.camera_failed_part():
                 self.save_camera_ng()
             else:
                 self.start_plc_test()
@@ -1980,21 +1988,21 @@ class EOLTesterGUI:
     CAMERA_NG_POPUP_MS = 4000
     CAMERA_NG_IMAGE_WIDTH = 480
     # Camera 2's cable ROIs and stripes, by their group's verdict (BGR)
-    REGION_INK = {True: (0, 160, 0), False: (0, 0, 255)}
+    REGION_INK = {"OK": (0, 160, 0), "NG": (0, 0, 255), "ERROR": (0, 165, 255)}
 
     def with_stripe_regions(self, result):
         """A copy of camera 2's judged frame with each stripe group drawn on it.
 
         Each group's cable ROI is drawn and its stripes outlined, green if
-        that group passed and red if not, so a picture shows which group
-        failed.
+        that group passed, red if NG and orange if it couldn't be judged, so
+        a picture shows which group failed.
         """
         img = result.frame.copy()
         thick = max(2, img.shape[1] // 320)
         scale = max(0.5, img.shape[1] / 1280)
         several = len(result.groups) > 1
         for n, group in enumerate(result.groups, start=1):
-            ink = self.REGION_INK[group.ok]
+            ink = self.REGION_INK[group.judgement]
             for shape in group.stripe_boxes:
                 cv2.polylines(img, [np.round(shape).astype(np.int32)], True, ink, thick)
             if group.region:
@@ -2005,19 +2013,21 @@ class EOLTesterGUI:
                             cv2.FONT_HERSHEY_SIMPLEX, scale, ink, thick)
         return img
 
-    def show_camera_ng_popup(self, cameras):
+    def show_camera_ng_popup(self, cameras, verdict="NG", result=None):
         """Flash "CAM1 CHECK RESULT: NG" over the console for four seconds.
 
         `cameras` lists (name, frame) for each camera that judged NG; each
         frame is shown as judged, with what was found outlined and, for
-        camera 2, the region it searched. It takes no click and holds neither the keyboard
-        nor the test, so the PLC carries on while it shows. A newer one
-        replaces it.
+        camera 2, the region it searched. With `verdict` "ERROR" it says
+        `result` instead, e.g. "NO CABLE", in orange. It takes no click and
+        holds neither the keyboard nor the test, so the PLC carries on while
+        it shows. A newer one replaces it.
         """
         old = getattr(self, 'camera_ng_popup', None)
         if old is not None and old.winfo_exists():
             old.destroy()
-        popup = tk.Toplevel(self.root, bg=ui.DANGER)
+        ink = ui.WARNING if verdict == "ERROR" else ui.DANGER
+        popup = tk.Toplevel(self.root, bg=ink)
         popup.overrideredirect(True)
         popup.attributes('-topmost', True)
         self.camera_ng_popup = popup
@@ -2025,9 +2035,9 @@ class EOLTesterGUI:
         names = " AND ".join(name for name, _ in cameras)
         body = tk.Frame(popup, bg='white')
         body.pack(fill="both", expand=True, padx=4, pady=4)
-        tk.Label(body, text="CAMERA CHECK NG", bg=ui.DANGER, fg='white',
+        tk.Label(body, text=f"CAMERA CHECK {verdict}", bg=ink, fg='white',
                  font=(self.FONT, 18, 'bold'), padx=40, pady=10).pack(fill="x")
-        tk.Label(body, text=f"{names} CHECK RESULT: NG", bg='white', fg=ui.DANGER,
+        tk.Label(body, text=f"{names} CHECK RESULT: {result or verdict}", bg='white', fg=ink,
                  font=(self.FONT, 26, 'bold'), padx=40, pady=16).pack()
 
         pictures = tk.Frame(body, bg='white')
@@ -2172,11 +2182,13 @@ class EOLTesterGUI:
                 print(f"[CAM1] {part_number}: {self.cam1Result} "
                       f"({result.error or 'part found' if result else out.get('cam1_error')})")
 
+            self.cam2_no_cable = False
             if not check_cam2:
                 self.cam2Result = "OFF"
             else:
                 result = out.get("cam2")
                 self.cam2Result = self.verdict_of(result) if result else "ERROR"
+                self.cam2_no_cable = bool(result and result.no_cable)
                 if self.cam2Result != "PASS":
                     problems.append(f"Camera 2 {self.cam2Result}: "
                                     f"{result.error if result else out.get('cam2_error')}")
@@ -2191,7 +2203,9 @@ class EOLTesterGUI:
                       ("CAM1", self.cam1Result if check_cam1 else "", out.get("cam1_frame")),
                       ("CAM2", self.cam2Result, out.get("cam2_frame")))
                   if verdict == "NG"]
-            if ng:
+            if self.cam2_no_cable:
+                self.show_camera_ng_popup([("CAM2", out.get("cam2_frame"))], "ERROR", "NO CABLE")
+            elif ng:
                 self.show_camera_ng_popup(ng)
             self.camera_checks_done = True
             then, self.after_camera_checks_do = self.after_camera_checks_do, None
