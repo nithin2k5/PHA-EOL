@@ -89,19 +89,21 @@ def _save_cam_cfg(index: int, width: int, height: int, enabled: bool, source=Non
     save_camera_config(source or _camera_source(), index if enabled else -1, width, height)
 
 
-def _probe_cameras(max_index: int = 6):
+def _probe_cameras(max_index: int = 6, skip: int = -1):
     """Indices that open *and* deliver a frame, with the sizes they deliver.
 
     A device that opens but never yields a frame is worse than no device at all —
     it looks configured and then fails mid-cycle — so opening is not enough to
     call a camera present. Each has "sizes", smallest first, and "width" and
-    "height", its largest.
+    "height", its largest. Index `skip` is left out, for a camera in use.
     """
     found = []
     if not _cv2_ok:
         return found
     from vision_engine import camera
     for i in range(max_index):
+        if i == skip:
+            continue
         try:
             cam = camera.probe(i)
         except Exception:
@@ -114,6 +116,8 @@ def _probe_cameras(max_index: int = 6):
 
 def _cam_label(cam: dict) -> str:
     """How a found camera reads in the list of devices."""
+    if cam.get("saved"):
+        return "Camera %d  (set up, %dx%d)" % (cam["index"], cam["width"], cam["height"])
     return "Camera %d  (up to %dx%d)" % (cam["index"], cam["width"], cam["height"])
 
 
@@ -2824,16 +2828,35 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     cmb_dev.bind("<<ComboboxSelected>>", _on_device_pick)
     cmb_res.bind("<<ComboboxSelected>>", _on_res_change)
 
-    def _scan():
-        _stop_stream()
-        preview.set_image(None)
-        preview.set_placeholder("Scanning for cameras…")
-        cmb_dev.config(values=["Scanning…"], state="disabled")
-        dev_var.set("Scanning…")
+    def _scan(keep_saved=False):
+        """Look for the cameras and list them.
+
+        Finding a camera's sizes takes up to 20 s, as each size it refuses
+        means opening it afresh. With `keep_saved` the camera already set up
+        is listed and shown at once, at its saved size, and only the other
+        devices are looked for; Re-scan finds its other sizes as well.
+        """
+        saved = []
+        if keep_saved:
+            size = (cam["width"], cam["height"])
+            saved = [{"index": cam["index"], "sizes": [size], "width": size[0],
+                      "height": size[1], "saved": True}]
+            found["cams"] = saved
+            cmb_dev.config(values=[DISABLED, _cam_label(saved[0])], state="disabled")
+            dev_var.set(_cam_label(saved[0]))
+            _on_device_pick()
+            status.config(text="Looking for other cameras…", fg=TXT_DIM)
+        else:
+            _stop_stream()
+            preview.set_image(None)
+            preview.set_placeholder("Scanning for cameras…")
+            cmb_dev.config(values=["Scanning…"], state="disabled")
+            dev_var.set("Scanning…")
         _set_btn_enabled(btn_rescan, False)
 
         def _work():
-            cams = _probe_cameras()
+            cams = sorted(saved + _probe_cameras(skip=cam["index"] if keep_saved else -1),
+                          key=lambda c: c["index"])
 
             def _apply():
                 if not alive["v"]:
@@ -2853,7 +2876,12 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
                     status.config(text="Nothing responded on indexes 0–5.", fg=NG_RED)
                 else:
                     status.config(text="%d camera(s) detected." % len(cams), fg=TXT_DIM)
-                _on_device_pick()
+                if keep_saved:
+                    # The camera set up is still the one picked, and showing
+                    status.config(text=status.cget("text") + " Re-scan to list every "
+                                       "size the camera set up offers.")
+                else:
+                    _on_device_pick()
 
             try:
                 win.after(0, _apply)
@@ -2922,7 +2950,7 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     win.protocol("WM_DELETE_WINDOW", _close)
     win.bind("<Escape>", lambda e: _close())
 
-    _scan()
+    _scan(keep_saved=cam["enabled"])
     _tick()
     parent.wait_window(win)
     return changed["v"]
