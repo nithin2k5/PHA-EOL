@@ -514,7 +514,9 @@ def _judge(frame: np.ndarray, recipe: Recipe):
 # followed frame by frame.
 
 def _log_frame(part_number: str, n: int, seq, m, verdict):
-    stripes = ", ".join("%s %.0fpx" % (st.colour_name or "?", st.width_px)
+    # With each stripe's Lab, to tell which colour it lay nearest
+    stripes = ", ".join("%s %.0fpx Lab(%s)" % (st.colour_name or "?", st.width_px,
+                                               ",".join("%.0f" % v for v in st.lab))
                         for st in m.stripes) or "none"
     print(f"[STRIPES] {part_number} G{n} frame {seq}: {verdict.status} | "
           f"cable {m.presence} {m.cable_width_px:.1f}px at {m.angle_deg:.1f}deg | "
