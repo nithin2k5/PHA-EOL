@@ -397,7 +397,9 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
     was read, with "body", the nearer of CABLE_COLOURS, and "colour", the
     nearest of the engine's colours to most stripes, unless given, "count",
     "stripe_width" and "span", and the outline of each stripe in frame
-    coordinates. With `count`, that many
+    coordinates. "seen_body" and "seen_colour" are always the colours read,
+    so a colour given that the part doesn't show can be told apart. With
+    `count`, that many
     stripes must be found. Raises ValueError with an operator-readable reason
     when the group can't be taught from this picture.
     """
@@ -423,10 +425,13 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
     # confirms it, and the check is taught the shade the part shows
     refs = _PRESETS.all()
     names = Counter(min(refs, key=lambda ref: ref.distance(st.lab)).name for st in m.stripes)
+    seen_body = min(CABLE_COLOURS, key=lambda name: _PRESETS.get(name).distance(m.body_lab))
+    seen_colour = names.most_common(1)[0][0]
     found = {
-        "body": body or min(CABLE_COLOURS,
-                            key=lambda name: _PRESETS.get(name).distance(m.body_lab)),
-        "colour": colour or names.most_common(1)[0][0],
+        "body": body or seen_body,
+        "colour": colour or seen_colour,
+        "seen_body": seen_body,
+        "seen_colour": seen_colour,
         "count": len(m.stripes),
         "stripe_width": float(np.median([st.width_px for st in m.stripes])),
         "span": float(m.stripes[-1].end - m.stripes[0].start),

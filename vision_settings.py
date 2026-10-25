@@ -3196,6 +3196,19 @@ def _open_stripe_teach(parent, part_number=None):
         return "%s × %d on %s" % (g["colour"] or "?", g["count"] or g["model"]["count"],
                                   g["body"] or "?")
 
+    def _seen(g):
+        """What the part shows, e.g. "yellow × 3 on grey"."""
+        m = g["model"]
+        return "%s × %d on %s" % (m["seen_colour"], m["count"], m["seen_body"])
+
+    def _differs(g):
+        """The colours chosen that the part doesn't show, as
+        [(what, chosen, seen)], e.g. [("stripes", "black", "yellow")]."""
+        m = g["model"]
+        return [(what, g[key], m["seen_" + key])
+                for what, key in (("cable", "body"), ("stripes", "colour"))
+                if g[key] and g[key] != m["seen_" + key]]
+
     def _status(g):
         """(text, colour) saying how far a group has got."""
         if g["area"] is None:
@@ -3208,6 +3221,8 @@ def _open_stripe_teach(parent, part_number=None):
             return _what(g) + "  ·  choose the colours", WARN
         if not _ready(g):
             return _what(g) + "  ·  count doesn't match", WARN
+        if _differs(g):
+            return _what(g) + "  ·  the part shows " + _seen(g), WARN
         return _what(g), OK_GREEN
 
     def _count():
@@ -3305,11 +3320,18 @@ def _open_stripe_teach(parent, part_number=None):
         colour_var.set(g["colour"] or "")
         if model is not None:
             count_var.set(str(g["count"] or model["count"]))
+            differs = _differs(g)
             found_lbl.config(text="%s × %d" % (g["colour"] or "?", model["count"]),
-                             fg=OK_GREEN)
+                             fg=WARN if differs else OK_GREEN)
             unnamed = [what for what, key in (("cable", "body"), ("stripe", "colour"))
                        if not g[key]]
-            if unnamed:
+            if differs:
+                found_note.config(
+                    text=" ".join("The %s look%s %s, not %s." % (
+                        what, "" if what == "stripes" else "s", seen, chosen)
+                        for what, chosen, seen in differs) +
+                    " Change it only if the camera names the colour wrongly.", fg=WARN)
+            elif unnamed:
                 found_note.config(
                     text="The %s colour is not close to any named colour. Choose it "
                          "here; the check is taught the shade this part shows."
@@ -3354,9 +3376,12 @@ def _open_stripe_teach(parent, part_number=None):
         elif not _ready(g):
             text, fill = "GROUP %d — %d stripes found, %s expected" % (
                 n, g["model"]["count"], g["count"]), ui.DANGER_SOFT
+        elif _differs(g):
+            text, fill = ("GROUP %d — %s found, but %s is chosen. Check the colours (C)."
+                          % (n, _seen(g), _what(g)), ui.DANGER_SOFT)
         else:
             text, fill = ("GROUP %d — %s found. Press Done, or adjust the %s ROI."
-                          % (n, _what(g), "stripes" if draw["mode"] == "box" else "cable"),
+                          % (n, _seen(g), "stripes" if draw["mode"] == "box" else "cable"),
                           ui.SUCCESS_SOFT)
         banner.config(text=text, bg=fill)
 
