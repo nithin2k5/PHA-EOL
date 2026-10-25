@@ -85,31 +85,6 @@ def _fits(ref: dict) -> bool:
             and ColourReference.from_dict(ref).achromatic == shipped.achromatic)
 
 
-def _looks(ref: dict) -> Optional[str]:
-    """The colour a taught shade looks, when it can't be the one it is named.
-
-    A yellow shade taught as grey would be named grey on the line, as the
-    part's own shades name what is seen, and pass. None when it fits.
-    """
-    if not ref or _SHIPPED.get(ref.get("name")) is None or _fits(ref):
-        return None
-    shade = ColourReference.from_dict(ref)
-    kind = [r for r in _PRESETS.all() if r.achromatic == shade.achromatic]
-    return min(kind, key=lambda r: r.distance(shade.lab)).name if kind else "another colour"
-
-
-def misnamed(model: dict) -> Optional[str]:
-    """Why a model's colours can't be right, e.g. "the stripes of group 1
-    look yellow, not grey", or None."""
-    for n, group in enumerate(groups_of(model), start=1):
-        for what, key in (("cable", "body_ref"), ("stripes", "stripe_ref")):
-            looks = _looks(group.get(key))
-            if looks:
-                return "the %s of group %d look%s %s, not %s" % (
-                    what, n, "" if what == "stripes" else "s", looks, group[key]["name"])
-    return None
-
-
 def _load_learnt() -> List[dict]:
     try:
         with open(_LEARNT_COLOURS, "r") as f:
@@ -495,12 +470,6 @@ def teach(part_number: str, frames, groups: List[dict]) -> dict:
                 raise ValueError(first_error.capitalize() + ".")
             turned = _turn(frames[0], recipe)[1]
             session.build(turned)
-            for what, ref in (("cable looks", turned.body_ref),
-                              ("stripes look", turned.stripe_ref)):
-                looks = _looks(ref)
-                if looks:
-                    raise ValueError("The %s %s, not %s. Choose the colour on the part."
-                                     % (what, looks, ref["name"]))
         except ValueError as e:
             raise ValueError(f"Group {n}: {e}")
         # Taught on the turned frame; the ROIs are kept as drawn
@@ -667,9 +636,6 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
     if needs_reteach(model):
         return _error(f"'{part_number}' was taught with the earlier stripe check. "
                       f"Re-teach it.")
-    wrong = misnamed(model)
-    if wrong:
-        return _error(f"In '{part_number}', {wrong}. Re-teach it.")
     groups = [Recipe.from_dict(g) for g in groups_of(model)]
     if not groups:
         return _error(f"The stripe model for '{part_number}' has no stripe groups")

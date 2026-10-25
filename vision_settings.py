@@ -1535,11 +1535,6 @@ def render(parent):
             return ("Re-teach needed", "problem",
                     "Taught with the earlier stripe check — re-teach it before it is "
                     "used on the line.")
-        wrong = stripe_check.misnamed(model)
-        if wrong:
-            return ("Re-teach needed", "problem",
-                    wrong[0].upper() + wrong[1:] + " — re-teach it under the colours on "
-                    "the part.")
         if cam["enabled"] and size and tuple(size) != (cam["width"], cam["height"]):
             return ("Size differs", "problem",
                     "Taught at %d x %d, but camera 2 is set to %d x %d — re-teach it, or "
