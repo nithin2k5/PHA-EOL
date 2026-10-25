@@ -2432,7 +2432,9 @@ def _open_test_dialog(parent, ctrl, part_number, on_changed=None):
         last["result"] = result
         color = _VERDICT_INK.get(result.judgement, TXT_DIM)
         _paint_verdict(_VERDICT_FILL.get(result.judgement, ui.SUBTLE))
-        verdict_lbl.config(text=result.judgement, fg=color)
+        # A good part reads PASS, as on the test console
+        verdict_lbl.config(text="PASS" if result.judgement == "OK" else result.judgement,
+                           fg=color)
         verdict_note.config(text=result.error or "Part found", fg=color)
 
         info = ctrl.model_info(part_number) or {}
@@ -3820,7 +3822,9 @@ def _open_stripe_test(parent, part_number):
     def _show(result):
         color = _VERDICT_INK.get(result.judgement, TXT_DIM)
         _paint_verdict(_VERDICT_FILL.get(result.judgement, ui.SUBTLE))
-        verdict_lbl.config(text=result.judgement, fg=color)
+        # A good part reads PASS, as on the test console
+        verdict_lbl.config(text="PASS" if result.judgement == "OK" else result.judgement,
+                           fg=color)
         verdict_note.config(text=result.error or "Stripes match", fg=color)
 
         m_source.config(text="Camera 2" if source["kind"] == "camera" else source["label"])
