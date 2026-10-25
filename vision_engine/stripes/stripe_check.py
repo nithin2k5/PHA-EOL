@@ -122,6 +122,10 @@ CABLE_COLOURS = ("black", "grey")
 # takes several auto samples so the tolerances cover frame-to-frame noise
 TEACH_FRAMES = 5
 
+# How long a live check keeps taking fresh sets of frames while each set
+# disagrees (see _inspect_live), from the first frame
+LIVE_TIMEOUT_S = 6.0
+
 # The smallest ROIs the engine can work in (see marker_engine/detection.py):
 # the cable ROI's long and short sides, and the stripes ROI's sides
 MIN_CABLE_BOX = (20, 12)
@@ -593,10 +597,12 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
     """Judge each group with the engine's inspection cycle on camera 2.
 
     As in the marker app, a result needs several fresh frames in a row with
-    the cable still and the same verdict; frames that disagree, or a cable
-    that keeps moving until the cycle's time runs out, give INDETERMINATE.
-    Returns (results, frame judged), or (None, message) when the camera
-    fails or gives frames of the wrong size.
+    the cable still and the same verdict; a cable that keeps moving until
+    the cycle's time runs out gives INDETERMINATE. Frames that disagree,
+    such as one borderline frame among passes on a good part, start a fresh
+    set, until LIVE_TIMEOUT_S; only then is the last set that disagreed
+    judged. Returns (results, frame judged), or (None, message) when the
+    camera fails or gives frames of the wrong size.
     """
     cycles = []
     for recipe in groups:
@@ -606,6 +612,8 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
     done = [None] * len(groups)
     # Each group's verdict on every frame fed to its cycle
     fed = [[] for _ in groups]
+    # Each group's last set of frames that disagreed, judged if no set agrees
+    mixed = [None] * len(groups)
     frame, count = stream.read_after(0, timeout=5.0)
     started = time.time()
     for cycle in cycles:
@@ -634,7 +642,23 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
                 or cycle.tick(now)
             if res is not None:
                 shown = res.frame.measurement if res.frame is not None else None
-                done[i] = (res, shown)
+                # The frames it was given on, all in a row; with fewer than
+                # the cycle needs, it timed out with no steady set
+                steady = res.frames_used >= cycle.cfg["frames_required"]
+                result = (res, shown, fed[i][-res.frames_used:] if steady else [])
+                if steady and len(set(res.frame_statuses)) > 1 \
+                        and now - started < LIVE_TIMEOUT_S:
+                    mixed[i] = result
+                    print(f"[STRIPES] {part_number} G{i + 1}: frames disagree "
+                          f"({', '.join(res.frame_statuses)}), taking a fresh set")
+                    cycle.trigger(now, count)
+                elif not steady and mixed[i] is not None:
+                    # Out of time looking for a set that agrees
+                    done[i] = mixed[i]
+                else:
+                    done[i] = result
+            elif mixed[i] is not None and now - started >= LIVE_TIMEOUT_S:
+                done[i] = mixed[i]
         if all(d is not None for d in done):
             break
         frame, count = stream.read_after(count, timeout=2.0)
@@ -651,11 +675,7 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
             results.append(d)
             _log_group(part_number, n, d)
             continue
-        res, m = d
-        # A result is given on the last frames fed, all in a row; with fewer
-        # than the cycle needs, it timed out with no steady set
-        steady = res.frames_used >= cycles[n - 1].cfg["frames_required"]
-        verdicts = fed[n - 1][-res.frames_used:] if steady else []
+        res, m, verdicts = d
         results.append(_group_result(recipe, m, res.verdict, shown_frame.shape[0], verdicts))
         _log_group(part_number, n, results[-1],
                    f" ({res.frames_used} frames: {', '.join(res.frame_statuses) or 'none'})")
