@@ -105,6 +105,14 @@ class LiveCameraView(tk.Frame):
     """
 
     REFRESH_MS = 80
+    # The live picture is blended with the ones before it wherever it holds
+    # still, so the camera's grain settles as it does in the Camera app;
+    # wherever it changes by more than STILL the new frame shows at once, so
+    # a moving part leaves no trail. STILL sits well above heavy grain, so
+    # grain is not taken for movement. Only the picture on screen is
+    # smoothed: the checks judge the camera's own frames.
+    BLEND = 0.25
+    STILL = 40
 
     def __init__(self, parent, height, font, idle_fill, on_click=None):
         super().__init__(parent, bg='black')
@@ -123,6 +131,7 @@ class LiveCameraView(tk.Frame):
         self.stream = None
         self.held = None
         self.photo = None
+        self.smoothed = None        # the live picture as shown, float BGR
         self.note = "Camera not set up"
         self.after(self.REFRESH_MS, self.refresh)
 
@@ -155,22 +164,36 @@ class LiveCameraView(tk.Frame):
         if self.held is None:
             frame = self.stream.latest() if self.stream is not None else None
             if frame is not None:
-                self.show(frame)
+                self.show(frame, smooth=True)
             elif self.stream is None or not self.stream.is_alive():
                 self.photo = None
                 self.picture.configure(
                     image="", text=self.note if self.stream is None else "Camera not responding")
         self.after(self.REFRESH_MS, self.refresh)
 
-    def show(self, frame):
-        """Fit a BGR frame into the box, keeping its shape."""
+    def show(self, frame, smooth=False):
+        """Fit a BGR frame into the box, keeping its shape.
+
+        With `smooth` it is blended with the live pictures before it (see
+        BLEND); a held frame is shown just as it was judged.
+        """
         w, h = self.picture.winfo_width(), self.picture.winfo_height()
         if w < 10 or h < 10:
             return
         scale = min(w / frame.shape[1], h / frame.shape[0])
         size = (max(1, int(frame.shape[1] * scale)), max(1, int(frame.shape[0] * scale)))
-        rgb = Image.fromarray(frame[..., ::-1].copy())     # BGR to RGB
-        self.photo = ImageTk.PhotoImage(rgb.resize(size, Image.Resampling.BILINEAR))
+        new = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+        if smooth and self.smoothed is not None and self.smoothed.shape == new.shape:
+            change = cv2.absdiff(new, cv2.convertScaleAbs(self.smoothed))
+            change = cv2.max(cv2.max(change[..., 0], change[..., 1]), change[..., 2])
+            moved = cv2.threshold(change, self.STILL - 1, 255, cv2.THRESH_BINARY)[1]
+            cv2.accumulateWeighted(new, self.smoothed, self.BLEND, mask=cv2.bitwise_not(moved))
+            cv2.copyTo(new.astype(np.float32), moved, self.smoothed)
+        else:
+            self.smoothed = new.astype(np.float32)
+        bgr = cv2.convertScaleAbs(self.smoothed)           # rounded to whole levels
+        rgb = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        self.photo = ImageTk.PhotoImage(rgb)
         self.picture.configure(image=self.photo, text="")
 
 
