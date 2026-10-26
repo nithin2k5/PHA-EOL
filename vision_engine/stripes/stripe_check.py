@@ -73,6 +73,10 @@ _PRESETS = PresetStore(_PRESETS_FILE)
 _SHIPPED = PresetStore(_PRESETS_FILE)
 COLOURS = tuple(_PRESETS.names())
 
+# Names camera 2 no longer tells apart, and the colour each now counts as:
+# pale yellow is yellow, and a part taught as pale yellow is judged as yellow
+_MERGED = {"pale yellow": "yellow"}
+
 # Colours as camera 2 sees them, learnt from each part taught under the names
 # the operator confirmed, and kept on this machine. They replace the marker
 # app's values, which a different camera and light can put a name or more
@@ -221,9 +225,16 @@ def load_model(part_number: str) -> Optional[dict]:
         return None
     try:
         with open(path, "r") as f:
-            return json.load(f)
+            model = json.load(f)
     except (OSError, ValueError):
         return None
+    for group in model.get("groups", []):
+        for key in ("body_colour", "stripe_colour"):
+            group[key] = _MERGED.get(group.get(key), group.get(key))
+        for key in ("body_ref", "stripe_ref"):
+            if group.get(key):
+                group[key]["name"] = _MERGED.get(group[key]["name"], group[key]["name"])
+    return model
 
 
 def needs_reteach(model: dict) -> bool:

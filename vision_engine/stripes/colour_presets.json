@@ -143,19 +143,6 @@
       "tol_l": 14.0,
       "max_chroma": 48.49,
       "hue_tol_deg": null
-    },
-    {
-      "name": "pale yellow",
-      "lab": [
-        92.0,
-        -4.0,
-        24.0
-      ],
-      "tol": 9.0,
-      "achromatic": false,
-      "tol_l": 14.0,
-      "max_chroma": 32.33,
-      "hue_tol_deg": 30.0
     }
   ]
 }
