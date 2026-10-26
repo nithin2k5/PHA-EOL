@@ -156,13 +156,6 @@ TEACH_FRAMES = 5
 # disagrees (see _inspect_live), from the first frame
 LIVE_TIMEOUT_S = 6.0
 
-# A gap this long between frames is the camera stalling and being reopened
-# (see vision_engine/camera.py), not the check being slow
-STALL_S = 1.5
-
-# How long a live check waits for the next frame, enough for a reopen
-NEXT_FRAME_TIMEOUT_S = 6.0
-
 # The smallest ROIs the engine can work in (see marker_engine/detection.py):
 # the cable ROI's long and short sides, and the stripes ROI's sides
 MIN_CABLE_BOX = (20, 12)
@@ -653,7 +646,7 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
     # Each group's last set of frames that disagreed, judged if no set agrees
     mixed = [None] * len(groups)
     frame, count = stream.read_after(0, timeout=5.0)
-    started = last = time.time()
+    started = time.time()
     for cycle in cycles:
         # Only frames from here on count
         cycle.trigger(started, count - 1)
@@ -663,17 +656,6 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
                           f"but this part was taught at {frame_size[0]}x{frame_size[1]}. "
                           f"Re-teach it.")
         now = time.time()
-        if now - last > STALL_S:
-            # The frames before the camera stalled can't make a steady set
-            # with those after it, and the stall isn't counted against the
-            # time the check has
-            print(f"[STRIPES] {part_number}: camera 2 stalled for {now - last:.1f}s, "
-                  f"starting the frames afresh")
-            started += now - last
-            for i, cycle in enumerate(cycles):
-                if done[i] is None:
-                    cycle.trigger(now, count - 1)
-        last = now
         for i, (recipe, cycle) in enumerate(zip(groups, cycles)):
             if done[i] is not None:
                 continue
@@ -710,7 +692,7 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
                 done[i] = mixed[i]
         if all(d is not None for d in done):
             break
-        frame, count = stream.read_after(count, timeout=NEXT_FRAME_TIMEOUT_S)
+        frame, count = stream.read_after(count, timeout=2.0)
     if any(d is None for d in done):
         return None, "Camera 2 stopped giving frames"
 
