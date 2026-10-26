@@ -48,6 +48,7 @@ DEFAULT_DETECTION = {
     "min_stripe_width_px": 2,
     "max_stripe_width_px": 80,
     "merge_gap_px": 3,             # fragments closer than this along the axis are one stripe
+    "stripe_split_dip": 0.2,       # a run dipping this far below its peaks either side is two stripes
     "min_fill": 0.5,               # pixel fill ratio inside a stripe band
     "group_stripes": True,         # with a taught pitch, ignore candidates far from the stripe group
     "max_edge_width_px": 6.0,      # stripe edge transition wider than this -> too blurred

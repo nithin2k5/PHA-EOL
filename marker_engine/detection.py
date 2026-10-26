@@ -545,6 +545,22 @@ def _measure_band(m: Measurement, s_lab, s_bgr, top, bot, x0, x1, inv_m, roi, cf
     min_cov = cfg["min_coverage"]
     strong_runs = _merge_runs(_runs(profile >= min_cov), gap)
     weak_runs = _merge_runs(_runs(profile >= 0.25), gap)
+    # Stripes only a few pixels apart blur into each other, so the gap between
+    # them may never fall below the threshold; it still shows as a dip in the
+    # colour difference between two peaks
+    # colour difference between two peaks. Glare hides part of a stripe and
+    # makes a dip of its own, so a run is never split where there is glare.
+    strength = (diff[:, x0:x1] * sub_valid).sum(axis=0) / n_valid
+    strength = np.convolve(strength, [0.25, 0.5, 0.25], mode="same")
+    clear = np.convolve(glare_cov, np.ones(5), mode="same") == 0
+    strong_runs = [piece for run in strong_runs
+                   for piece in _split_at_dips(run, strength, clear, cfg["stripe_split_dip"],
+                                               max(3, int(cfg["min_stripe_width_px"])))]
+    # Stripes split apart are separate shapes, not the strokes of one character
+    shapes = closed.copy()
+    for (_, a_end), (b_start, _) in zip(strong_runs, strong_runs[1:]):
+        if b_start - a_end == 1:
+            shapes[:, a_end] = False
 
     # crossing-object test needs background just outside the cable
     out_gap = 3
@@ -553,7 +569,7 @@ def _measure_band(m: Measurement, s_lab, s_bgr, top, bot, x0, x1, inv_m, roi, cf
 
     if any(s_ == 0 or e_ == len(profile) for s_, e_ in strong_runs):
         m.issues.append("stripe-like mark cut by the inspection region border - reposition cable or enlarge region")
-    n_lab, labels, stats, _ = cv2.connectedComponentsWithStats(closed.astype(np.uint8), connectivity=8)
+    n_lab, labels, stats, _ = cv2.connectedComponentsWithStats(shapes.astype(np.uint8), connectivity=8)
 
     accepted: list[tuple[int, int, float, bool]] = []
     for s, e in strong_runs:
@@ -668,6 +684,28 @@ def _local_reference(band_lab: np.ndarray, valid: np.ndarray, win: int) -> np.nd
     c1 = centres[idx + 1].astype(np.float32)
     t = ((xs - c0) / np.maximum(c1 - c0, 1.0))[None, :, None]
     return samples[:, idx] * (1 - t) + samples[:, idx + 1] * t
+
+
+def _split_at_dips(run, strength: np.ndarray, clear: np.ndarray, dip: float,
+                   min_w: int) -> list[tuple[int, int]]:
+    """[start, end) pieces of ``run``, split wherever ``strength`` (the colour
+    difference along the axis) falls ``dip`` below the highest point on each
+    side, leaving each piece at least ``min_w`` wide. Only columns ``clear``
+    of glare are split at; the dip itself goes to neither piece."""
+    s, e = run
+    best = None
+    for v in range(s + min_w, e - min_w):
+        if not clear[v]:
+            continue
+        side = min(strength[s:v].max(), strength[v + 1:e].max())
+        depth = 1.0 - strength[v] / side if side > 0 else 0.0
+        if depth >= dip and (best is None or depth > best[0]):
+            best = (depth, v)
+    if best is None:
+        return [run]
+    v = best[1]
+    return _split_at_dips((s, v), strength, clear, dip, min_w) + \
+        _split_at_dips((v + 1, e), strength, clear, dip, min_w)
 
 
 def _stripe_edge_width(band_lab, valid, stripes) -> float:
