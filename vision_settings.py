@@ -1438,6 +1438,8 @@ def render(parent):
     for line in ("Each group has a cable ROI along the cable and a stripes ROI inside it.",
                  "A part passes when every group's cable colour, stripe count and stripe "
                  "colours match the good part it was taught from.",
+                 "With one group, its stripes may sit anywhere along the cable ROI: the "
+                 "marking needn't be in the same place on every cable.",
                  "On the line it needs several steady camera frames that agree.",
                  "NG: a wrong part. ERROR: a picture it can't judge reliably — blur, "
                  "glare, something over the cable or light unlike when it was taught."):
@@ -3412,9 +3414,10 @@ def _open_stripe_teach(parent, part_number=None):
         s4_title.config(text="Group %d" % (active["i"] + 1))
 
         if g["area"] is None:
-            area_note.config(text="Drag a box along the cable where this group's stripes "
-                                  "are, with some of the bench above and below it. The "
-                                  "cable must run along its long side.", fg=TXT_FAINT)
+            area_note.config(text="Drag a box along the cable over everywhere this group's "
+                                  "stripes can be, clear of clamps, with some of the bench "
+                                  "above and below it. The cable must run along its long "
+                                  "side.", fg=TXT_FAINT)
         else:
             area_note.config(text="Cable ROI %d × %d px. Only the cable inside it is "
                                   "looked at. Drag its edges on the picture to adjust it."
@@ -3424,8 +3427,10 @@ def _open_stripe_teach(parent, part_number=None):
             box_note.config(text="Inside the cable ROI, drag a box round this group's "
                                  "stripes, with a little cable either side.", fg=TXT_FAINT)
         else:
-            box_note.config(text="Stripes ROI %d × %d px. Only stripes inside it count. "
-                                 "Drag its edges on the picture to adjust it."
+            box_note.config(text="Stripes ROI %d × %d px. The good part's stripes are taught "
+                                 "from inside it; with one group, they are looked for along "
+                                 "the whole cable ROI on the line. Drag its edges on the "
+                                 "picture to adjust it."
                                  % (g["roi"]["width"], g["roi"]["height"]),
                             fg=TXT_FAINT)
 

@@ -21,7 +21,10 @@ Methodology:
     and stripe colours of the good part are taught from what it sees.
   - Inspect: each group is judged in its own two ROIs. The cable may sit a
     little higher or lower, or lie a few degrees off, but must run along the
-    long side of its cable ROI.
+    long side of its cable ROI. A part with one group is marked in a
+    different place on each cable, so its stripes are looked for along the
+    whole cable ROI, not only in the stripes ROI; with several groups each
+    keeps to its own stripes ROI, so one group isn't taken for another.
   - Result: OK if every group passes. A group whose colours, count or cable
     are wrong is NG; one the engine cannot judge reliably (blur, glare,
     something over the cable, light unlike the teach) is an ERROR.
@@ -737,6 +740,9 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
     groups = [Recipe.from_dict(g) for g in groups_of(model)]
     if not groups:
         return _error(f"The stripe model for '{part_number}' has no stripe groups")
+    if len(groups) == 1:
+        # Anywhere along the cable (see the module docstring)
+        groups[0].inspection_region = groups[0].roi
 
     live = frame is None
     if not live:
