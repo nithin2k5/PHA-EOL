@@ -5,6 +5,34 @@ import os
 # rather than about three (see vision_engine/camera.py)
 os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
 
+import sys
+
+
+def _already_running():
+    """True if EOL Tester is already open on this PC.
+
+    A second copy would fight the first for the PLC's COM port and the
+    cameras, so only one may run. A named Windows mutex is held for as long
+    as the first copy runs, and is let go by Windows however it ends.
+    """
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    global _instance_mutex
+    _instance_mutex = kernel32.CreateMutexW(None, False, "Local\\EOL_Tester")
+    return ctypes.get_last_error() == 183      # ERROR_ALREADY_EXISTS
+
+
+# Checked before the consoles are loaded, so a second copy says so at once
+if __name__ == "__main__" and _already_running():
+    import ctypes
+    ctypes.windll.user32.MessageBoxW(
+        None, "EOL Tester is already running.\n\nUse the window that is already open.",
+        "EOL Tester", 0x40 | 0x40000)          # information icon, on top
+    sys.exit(0)
+
 import tkinter as tk
 from tkinter import ttk, messagebox
 import configparser
