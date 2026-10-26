@@ -85,6 +85,19 @@ fi
 # One folder, with the libraries beside the .exe (--contents-directory .):
 # every module finds its data files next to itself, so the settings files
 # sit next to EOL_Tester.exe where they can be edited.
+#
+# Data files a module reads from its own folder aren't picked up with the
+# code, so each is named here, as "source;folder in the program". Without
+# colour_presets.json camera 2 would name stripe colours from the marker
+# app's defaults instead of its own calibrated ones.
+DATA_FILES=(vision_engine/stripes/colour_presets.json)
+ADD_DATA=()
+for file in "${DATA_FILES[@]}"; do
+    src="$PROJECT_DIR/$file"
+    command -v cygpath >/dev/null && src="$(cygpath -m "$src")"
+    ADD_DATA+=(--add-data "$src;$(dirname "$file")")
+done
+
 step "Building $EXE_NAME.exe"
 "$VPY" -m PyInstaller --noconfirm --clean --windowed --onedir \
     --name "$EXE_NAME" \
@@ -94,7 +107,14 @@ step "Building $EXE_NAME.exe"
     --hidden-import babel.numbers \
     --hidden-import pynput.keyboard._win32 \
     --hidden-import pynput.mouse._win32 \
+    "${ADD_DATA[@]}" \
     "$ENTRY"
+for file in "${DATA_FILES[@]}"; do
+    if [ ! -f "$DIST_DIR/$file" ]; then
+        echo "The build is missing $file." >&2
+        exit 1
+    fi
+done
 
 for dir in "${APP_DIRS[@]}"; do
     [ -d "$dir" ] && cp -r "$dir" "$DIST_DIR/"
