@@ -77,6 +77,43 @@ COLOURS = tuple(_PRESETS.names())
 # pale yellow is yellow, and a part taught as pale yellow is judged as yellow
 _MERGED = {"pale yellow": "yellow"}
 
+# Stripe colours that come in more than one shade on these cables, by the
+# hue, least chroma and least lightness every shade of them has: yellow
+# stripes come strong or pale, and a part taught on one passes the other.
+# White has too little chroma for it, and orange and green are too far round
+# in hue.
+_ANY_SHADE = {"yellow": {"hue": 100.0, "hue_tol": 22.0, "min_chroma": 12.0, "min_l": 50.0}}
+
+
+class _AnyShade(ColourReference):
+    """A colour that matches its taught shade, or any shade of its hue."""
+
+    def __init__(self, taught: ColourReference, hue: float, hue_tol: float,
+                 min_chroma: float, min_l: float):
+        super().__init__(taught.name, taught.lab, taught.tol, taught.achromatic,
+                         taught.tol_l, taught.max_chroma, taught.hue_tol_deg)
+        self.taught = taught
+        self.hue, self.hue_tol = hue, hue_tol
+        self.min_chroma, self.min_l = min_chroma, min_l
+
+    def distance(self, lab) -> float:
+        lab = np.asarray(lab, np.float32)
+        d = self.taught.distance(lab)
+        if float(chroma(lab)) < self.min_chroma or float(lab[0]) < self.min_l:
+            return d
+        dh = abs(float(hue_deg(lab)) - self.hue)
+        return min(d, min(dh, 360.0 - dh) / self.hue_tol)
+
+
+def _stripe_shades(recipe: Recipe) -> Optional[ColourReference]:
+    """The taught stripe colour, taking its other shades (see _ANY_SHADE),
+    or None when it has no others."""
+    band = _ANY_SHADE.get(recipe.stripe_colour)
+    taught = recipe.stripe_reference(_PRESETS)
+    if band is None or taught is None:
+        return None
+    return _AnyShade(taught, **band)
+
 # Colours as camera 2 sees them, learnt from each part taught under the names
 # the operator confirmed, and kept on this machine. They replace the marker
 # app's values, which a different camera and light can put a name or more
@@ -549,6 +586,10 @@ def _judge(frame: np.ndarray, recipe: Recipe):
     """The engine's measurement and verdict for one group in one frame."""
     turned_frame, turned = _turn(frame, recipe)
     m = detect(turned_frame, turned)
+    shades = _stripe_shades(turned)
+    if shades is not None:
+        turned = turned.copy()
+        turned.stripe_reference = lambda presets: shades
     return m, evaluate(m, turned, _PRESETS)
 
 
