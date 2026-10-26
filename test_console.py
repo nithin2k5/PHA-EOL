@@ -3928,25 +3928,31 @@ class EOLTesterGUI:
         """Press START again while the PLC stays at HOME after it, and tell
         the operator if it never leaves.
 
-        Runs on a thread of its own. Gives up quietly once a later START
-        has taken over.
+        START is pressed again only when the PLC was just read in AUTO at
+        HOME: not when it can't be read, or is out of AUTO, as a press then
+        could land in a cycle that did start, or do nothing. Runs on a
+        thread of its own, and gives up quietly once a later START has
+        taken over.
         """
-        stage = "the PLC could not be read"
         for press in range(1, self.START_PRESSES + 1):
             pressed = time.time()
+            stage = "the PLC could not be read"
             while time.time() - pressed < self.START_TAKEN_TIME:
                 if attempt != self.plc_start_attempt:
                     return
                 status = self.read_process_status_values()
-                if status:
-                    stage = self.plc_stage(status)
-                    if stage not in (self.PLC_AT_HOME, self.PLC_NOT_AUTO):
-                        self.trace(f"START taken on press {press} - {stage} "
-                                   f"({time.time() - pressed:.1f}s after START)")
-                        return
+                stage = self.plc_stage(status) if status else "the PLC could not be read"
+                if status and stage not in (self.PLC_AT_HOME, self.PLC_NOT_AUTO):
+                    self.trace(f"START taken on press {press} - {stage} "
+                               f"({time.time() - pressed:.1f}s after START)")
+                    return
                 time.sleep(0.2)
             if attempt != self.plc_start_attempt:
                 return
+            if stage != self.PLC_AT_HOME:
+                self.trace(f"START not taken - {stage} {self.START_TAKEN_TIME:g}s after "
+                           f"START; not pressing START again")
+                break
             if press < self.START_PRESSES:
                 self.trace(f"START not taken - {stage} {self.START_TAKEN_TIME:g}s "
                            f"after START, pressing START again ({press + 1} of "
@@ -3954,12 +3960,12 @@ class EOLTesterGUI:
                 if not self.press_start_button_on_plc():
                     break
         self.trace(f"PLC DID NOT START - {stage} after START was pressed "
-                   f"{self.START_PRESSES} times")
+                   f"{press} time{'s' if press > 1 else ''}")
 
         def tell():
             self.log_operator_action("TEST_NOT_STARTED",
-                                     f"The PLC did not start after {self.START_PRESSES} "
-                                     f"START presses: {stage}")
+                                     f"The PLC did not start after {press} START "
+                                     f"press{'es' if press > 1 else ''}: {stage}")
             self.safe_update_message("The PLC did not start the test - check the machine "
                                      "and press START again.", "red")
         self.root.after(0, tell)
