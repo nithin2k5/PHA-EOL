@@ -536,8 +536,6 @@ class EOLTesterGUI:
         self.after_camera_checks_do = None  # waiting for them, to save the part
         self.cam1_by_app = False            # camera 1 judged here, not by the PLC
         self.cam2_no_cable = False          # camera 2 found no cable in the fixture
-        self.plc_starting = False           # START's coils are being written
-        self.plc_start_attempt = 0          # each START's own number, for its watcher
         self.resetPLCOnFormClosing = False
         self.machineOnPLCCoilAddress = ""
         self.alertOnPLCCoilAddress = ""
@@ -833,9 +831,6 @@ class EOLTesterGUI:
         if self.camera_check_running:
             self.safe_update_message("Checking the cable on the cameras - wait.", "red")
             return
-        if self.plc_starting:
-            self.safe_update_message("Starting the test on the PLC - wait.", "red")
-            return
         # Before the PLC is told anything, so an aborted test never starts
         if not self.cameras_ready_for_test():
             return
@@ -896,18 +891,7 @@ class EOLTesterGUI:
         self.root.after(1200, ready_for_next)
 
     def start_plc_test(self):
-        """Tell the PLC to start testing the loaded part, and watch for its result.
-
-        The coils are written, and waited on, on a thread of their own, so
-        the window stays live meanwhile.
-        """
-        self.plc_starting = True
-        self.plc_start_attempt += 1
-        attempt = self.plc_start_attempt
-        threading.Thread(target=self._start_plc_test_worker, args=(attempt,),
-                         daemon=True).start()
-
-    def _start_plc_test_worker(self, attempt):
+        """Tell the PLC to start testing the loaded part, and watch for its result."""
         # Each failed write says which coil it tried and what the PLC answered
         not_m_coil = "address missing or not an M coil (e.g. M1000)"
         failed = []
@@ -919,18 +903,12 @@ class EOLTesterGUI:
         if not self.write_machine_on_to_plc():
             failed.append(f"Machine On {self.machineOnPLCCoilAddress or '(not set)'}"
                           f" - {self.last_plc_error}")
-        # Pressed only once the rest is in place, so the PLC starts on this
-        # part, and once the PLC has taken Machine On
+        # Pressed only once the rest is in place, so the PLC starts on this part
         if not failed:
-            self.wait_for_machine_on()
             self.last_plc_error = not_m_coil
             if not self.press_start_button_on_plc():
                 failed.append(f"Start {self.startButtonPLCCoilAddress or '(not set)'}"
                               f" - {self.last_plc_error}")
-        self.root.after(0, lambda: self._plc_test_started(attempt, failed))
-
-    def _plc_test_started(self, attempt, failed):
-        self.plc_starting = False
         if failed:
             messagebox.showerror(
                 "Start Test",
@@ -941,7 +919,8 @@ class EOLTesterGUI:
         self.log_operator_action("TEST_START", "Started from the START button")
         self.safe_update_message("Test started - waiting for the PLC...", "blue")
         self.start_check_async()
-        threading.Thread(target=self.watch_plc_start, args=(attempt,), daemon=True).start()
+        threading.Thread(target=self.trace_plc_start, args=(time.time(),),
+                         daemon=True).start()
 
     def create_footer(self):
         bar = tk.Frame(self.main_container, bg=self.FOOTER_PINK, height=34)
@@ -3899,76 +3878,22 @@ class EOLTesterGUI:
     START_BUTTON_ADDRESS = "M000A"
     START_BUTTON_PRESS_TIME = 0.5
 
-    # START is pressed only once the PLC reads Machine On back as on (given
-    # up waiting for after MACHINE_ON_CONFIRM_TIME) and it has been on for
-    # MACHINE_ON_SETTLE_TIME: a START pressed straight after Machine On came
-    # on was sometimes ignored, the PLC staying at HOME. A PLC still at HOME
-    # START_TAKEN_TIME after START is pressed again, START_PRESSES in all.
-    MACHINE_ON_CONFIRM_TIME = 2.0
-    MACHINE_ON_SETTLE_TIME = 0.5
+    # How long after START the terminal log watches for the PLC to leave HOME
     START_TAKEN_TIME = 3.0
-    START_PRESSES = 2
 
-    def wait_for_machine_on(self):
-        """Wait until the PLC reads Machine On back as on, then a little longer."""
-        address = self.machineOnPLCCoilAddress
-        started = time.time()
-        while time.time() - started < self.MACHINE_ON_CONFIRM_TIME:
-            if self.read_coil_state(address):
-                self.trace(f"PLC MACHINE ON {address} reads ON after "
-                           f"{time.time() - started:.2f}s - pressing START in "
-                           f"{self.MACHINE_ON_SETTLE_TIME:.1f}s")
-                time.sleep(self.MACHINE_ON_SETTLE_TIME)
+    def trace_plc_start(self, pressed):
+        """Say in the terminal whether the PLC took START: when it left HOME,
+        or that it was still at HOME START_TAKEN_TIME after it. Only logs;
+        runs on a thread of its own."""
+        stage = "the PLC could not be read"
+        while time.time() - pressed < self.START_TAKEN_TIME:
+            status = self.read_process_status_values()
+            stage = self.plc_stage(status) if status else "the PLC could not be read"
+            if status and stage not in (self.PLC_AT_HOME, self.PLC_NOT_AUTO):
+                self.trace(f"START taken - {stage} ({time.time() - pressed:.1f}s after START)")
                 return
-            time.sleep(0.05)
-        self.trace(f"PLC MACHINE ON {address} not read back as ON within "
-                   f"{self.MACHINE_ON_CONFIRM_TIME:g}s - pressing START anyway")
-
-    def watch_plc_start(self, attempt):
-        """Press START again while the PLC stays at HOME after it, and tell
-        the operator if it never leaves.
-
-        START is pressed again only when the PLC was just read in AUTO at
-        HOME: not when it can't be read, or is out of AUTO, as a press then
-        could land in a cycle that did start, or do nothing. Runs on a
-        thread of its own, and gives up quietly once a later START has
-        taken over.
-        """
-        for press in range(1, self.START_PRESSES + 1):
-            pressed = time.time()
-            stage = "the PLC could not be read"
-            while time.time() - pressed < self.START_TAKEN_TIME:
-                if attempt != self.plc_start_attempt:
-                    return
-                status = self.read_process_status_values()
-                stage = self.plc_stage(status) if status else "the PLC could not be read"
-                if status and stage not in (self.PLC_AT_HOME, self.PLC_NOT_AUTO):
-                    self.trace(f"START taken on press {press} - {stage} "
-                               f"({time.time() - pressed:.1f}s after START)")
-                    return
-                time.sleep(0.2)
-            if attempt != self.plc_start_attempt:
-                return
-            if stage != self.PLC_AT_HOME:
-                self.trace(f"START not taken - {stage} {self.START_TAKEN_TIME:g}s after "
-                           f"START; not pressing START again")
-                break
-            if press < self.START_PRESSES:
-                self.trace(f"START not taken - {stage} {self.START_TAKEN_TIME:g}s "
-                           f"after START, pressing START again ({press + 1} of "
-                           f"{self.START_PRESSES})")
-                if not self.press_start_button_on_plc():
-                    break
-        self.trace(f"PLC DID NOT START - {stage} after START was pressed "
-                   f"{press} time{'s' if press > 1 else ''}")
-
-        def tell():
-            self.log_operator_action("TEST_NOT_STARTED",
-                                     f"The PLC did not start after {press} START "
-                                     f"press{'es' if press > 1 else ''}: {stage}")
-            self.safe_update_message("The PLC did not start the test - check the machine "
-                                     "and press START again.", "red")
-        self.root.after(0, tell)
+            time.sleep(0.2)
+        self.trace(f"START NOT TAKEN - {stage} {self.START_TAKEN_TIME:g}s after START")
 
     def press_start_button_on_plc(self):
         """Press and release the PLC's START coil, as the push button would.
