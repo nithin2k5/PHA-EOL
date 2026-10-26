@@ -32,6 +32,13 @@ _STREAMS: dict = {}
 # ~1s of failed reads at the 20ms retry interval.
 _MAX_CONSECUTIVE_READ_FAILURES = 50
 
+# A camera that stops giving frames is closed and opened again, this many
+# times in a row before the stream gives up on it
+_MAX_REOPENS = 3
+
+# Frames thrown away after a reopen, while auto-exposure settles again
+_SETTLE_AFTER_REOPEN = 10
+
 # Tried in this order (see the module docstring)
 _BACKENDS = (cv2.CAP_MSMF, cv2.CAP_DSHOW)
 
@@ -154,6 +161,8 @@ class CameraStream:
         self._pending = None
         self._controls_at_open = {}
         self._controls_seen = {}
+        # Every control set on the live stream, set again after a reopen
+        self._controls_set = {}
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
@@ -176,24 +185,38 @@ class CameraStream:
             self._running = False
         self._opened.set()
 
-        # A device can open and then never deliver a frame (unplugged mid-session,
-        # held by another process). Give up rather than let a reader block until
-        # its timeout — an inspection stalling the test cycle is worse than a
-        # fast "camera unavailable".
+        # A device can stop delivering frames (a USB stall, power saving,
+        # another program taking it) or never deliver any (unplugged, held
+        # by another process). It is opened afresh a few times, then given
+        # up on rather than let a reader block until its timeout - an
+        # inspection stalling the test cycle is worse than a fast "camera
+        # unavailable".
         consecutive_failures = 0
+        reopens = 0
+        skip = 0
         while self._running:
             self._apply_pending()
             ret, frame = self._cap.read()
             if ret:
+                consecutive_failures = 0
+                if skip:
+                    skip -= 1
+                    continue
+                reopens = 0
                 with self._frame_lock:
                     self._frame = frame
                     self._frames_read += 1
-                consecutive_failures = 0
             else:
                 consecutive_failures += 1
                 if consecutive_failures >= _MAX_CONSECUTIVE_READ_FAILURES:
-                    self._running = False
-                    break
+                    if reopens >= _MAX_REOPENS or not self._reopen():
+                        print(f"[CAMERA] Camera {self.index} gives no frames; giving up on it")
+                        self._running = False
+                        break
+                    reopens += 1
+                    consecutive_failures = 0
+                    skip = _SETTLE_AFTER_REOPEN
+                    continue
                 time.sleep(0.02)
 
         if self._cap is not None:
@@ -202,11 +225,30 @@ class CameraStream:
             self._cap.release()
             self._cap = None
 
+    def _reopen(self) -> bool:
+        """Close the device and open it again, with its picture controls."""
+        print(f"[CAMERA] Camera {self.index} stopped giving frames; reopening it")
+        self._cap.release()
+        self._cap = None
+        time.sleep(0.5)
+        if not self._running:
+            return False
+        cap = open_capture(self.index, self._width, self._height)
+        if cap is None:
+            return False
+        self._cap = cap
+        controls = {**picture_controls_for(self.index), **self._controls_set}
+        if controls:
+            apply_controls(cap, controls)
+        self._controls_seen = read_controls(cap)
+        return True
+
     def _apply_pending(self):
         with self._controls_lock:
             controls, self._pending = self._pending, None
         if controls is not None and self._cap is not None:
             apply_controls(self._cap, controls)
+            self._controls_set.update(controls)
             self._controls_seen = read_controls(self._cap)
 
     # ── picture controls ────────────────────────────────────────────────────
@@ -246,8 +288,9 @@ class CameraStream:
         # while this one is still mid-read or mid-release, which is a known way
         # to hard-crash (segfault) the process rather than raise a catchable
         # Python exception.
+        # A reopen under way takes longer to finish.
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=5.0)
 
     # ── frames ──────────────────────────────────────────────────────────────
 
