@@ -3112,12 +3112,11 @@ def _open_stripe_teach(parent, part_number=None):
     def _new_group(roi=None, area=None, body=None, colour=None, count=None):
         # "area" is the cable ROI and "roi" the stripes ROI inside it;
         # "body", "colour" and "count" are what the check will expect, kept
-        # when an ROI is redrawn; "chosen" holds which of the colours the
-        # operator picked, the others being named afresh from each picture;
-        # "model" and "outlines" are what was read from the ROIs
+        # when an ROI is redrawn. The colours are only ever the operator's
+        # choice, never filled in from what the camera sees. "model" and
+        # "outlines" are what was read from the ROIs
         return {"roi": roi, "area": area, "body": body, "colour": colour,
-                "count": count, "chosen": set(), "model": None, "outlines": [],
-                "error": None}
+                "count": count, "model": None, "outlines": [], "error": None}
 
     groups = [_new_group()]
     # The group being filled in, or None when none is
@@ -3443,19 +3442,19 @@ def _open_stripe_teach(parent, part_number=None):
             differs = _differs(g)
             found_lbl.config(text="%s × %d" % (g["colour"] or "?", model["count"]),
                              fg=WARN if differs else OK_GREEN)
-            unnamed = [what for what, key in (("cable", "body"), ("stripe", "colour"))
-                       if not g[key]]
+            unchosen = [what for what, key in (("cable", "body"), ("stripe", "colour"))
+                        if not g[key]]
             if differs:
                 found_note.config(
                     text=" ".join("The %s look%s %s, not %s." % (
                         what, "" if what == "stripes" else "s", seen, chosen)
                         for what, chosen, seen in differs) +
-                    " Change it only if the camera names the colour wrongly.", fg=WARN)
-            elif unnamed:
+                    " Check the colour chosen; the check keeps it.", fg=WARN)
+            elif unchosen:
                 found_note.config(
-                    text="The %s colour is not close to any named colour. Choose it "
-                         "here; the check is taught the shade this part shows."
-                         % " and ".join(unnamed), fg=WARN)
+                    text="Choose the %s colour. The camera sees %s; the check is "
+                         "taught the shade this part shows."
+                         % (" and ".join(unchosen), _seen(g)), fg=WARN)
             else:
                 found_note.config(
                     text="Each stripe is about %.0f px wide; the group is %.0f px long. "
@@ -3531,16 +3530,13 @@ def _open_stripe_teach(parent, part_number=None):
         g["model"], g["outlines"], g["error"] = None, [], None
         if state["frame"] is None or g["roi"] is None or g["area"] is None:
             return
-        chosen = {key: g[key] if key in g["chosen"] else None for key in ("body", "colour")}
         try:
             g["model"], g["outlines"] = stripe_check.read_group(
-                state["frame"], g["roi"], g["area"], **chosen)
+                state["frame"], g["roi"], g["area"], body=g["body"], colour=g["colour"])
         except ValueError as e:
             g["error"] = str(e)
             return
-        # Named from what was seen until the operator chooses otherwise
-        g["body"] = g["model"]["body"]
-        g["colour"] = g["model"]["colour"]
+        # The colours are left to the operator; only the count is filled in
         g["count"] = g["count"] or g["model"]["count"]
 
     def _refresh_all():
@@ -3640,9 +3636,7 @@ def _open_stripe_teach(parent, part_number=None):
         if g is None:
             return
         for key, var in (("body", body_var), ("colour", colour_var)):
-            if (var.get() or None) != g[key]:
-                g[key] = var.get() or None
-                g["chosen"].add(key)
+            g[key] = var.get() or None
         _refresh_all()
 
     def _set_live(on):
@@ -3684,8 +3678,8 @@ def _open_stripe_teach(parent, part_number=None):
         reloaded = False
         if (all(g["roi"] is None for g in groups) and previous
                 and previous.get("frame_size") == [img.shape[1], img.shape[0]]):
-            # The colours are read afresh from the new picture, not carried
-            # over, so a colour named wrongly before is not taught again
+            # The colours are not carried over: the operator chooses them
+            # again, so a colour named wrongly before is not taught again
             groups[:] = [_new_group(_as_box(g.get("inspection_region")), _as_box(g.get("roi")),
                                     count=g.get("stripe_count"))
                          for g in stripe_check.groups_of(previous)] or [_new_group()]
