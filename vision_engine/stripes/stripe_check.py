@@ -44,7 +44,7 @@ import numpy as np
 from marker_engine import (FAIL, NO_CABLE, PASS, PresetStore, Recipe, SetupError,
                            detect, evaluate)
 from marker_engine.calibration import TeachSession
-from marker_engine.colors import ColourReference
+from marker_engine.colors import ColourReference, chroma, hue_deg
 from marker_engine.cycle import FrameResult, InspectionCycle
 from marker_engine.detection import PRESENT
 from marker_engine.evaluation import INDETERMINATE
@@ -117,6 +117,36 @@ def _learn_colours(recipes: List[dict]):
 
 # The cable itself is only ever black or grey
 CABLE_COLOURS = ("black", "grey")
+
+# A stripe with more colour than this, once the cable's tint is taken off
+# it, is a coloured stripe; one with less is black, grey or white. It is the
+# most colour the shipped grey and white allow.
+STRIPE_CHROMA_MIN = 12.0
+
+
+def _stripe_name(lab, body_lab) -> str:
+    """The colour a stripe of shade `lab`, on a cable of shade `body_lab`, is.
+
+    The camera tints the whole picture and washes colours out: a green
+    stripe may show half the colour of the green preset. Ranked by distance
+    alone such a stripe lay nearer grey, the colourless shade with the
+    loosest limit, than any colour, so every pale colour read as grey, white
+    or black. The cable is black or grey, so its tint is the camera's and is
+    taken off the stripe. A stripe with colour left is then named by its hue,
+    lightness only telling apart colours of one hue such as brown and orange;
+    one without, by its lightness.
+    """
+    lab = np.array(lab, np.float32)
+    lab[1:] -= np.asarray(body_lab, np.float32)[1:]
+    refs = _PRESETS.all()
+    if float(chroma(lab)) <= STRIPE_CHROMA_MIN:
+        return min((r for r in refs if r.achromatic), key=lambda r: r.distance(lab)).name
+    hue = float(hue_deg(lab))
+
+    def apart(ref):
+        dh = abs(hue - float(hue_deg(ref.lab)))
+        return min(dh, 360.0 - dh) + 0.5 * abs(float(lab[0] - ref.lab[0]))
+    return min((r for r in refs if not r.achromatic), key=apart).name
 
 # Frames taken from camera 2 for teaching a good part, as the marker app
 # takes several auto samples so the tolerances cover frame-to-frame noise
@@ -430,8 +460,7 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
                          % (len(m.stripes), count))
     # The nearest name, even one the shade is outside of: the operator
     # confirms it, and the check is taught the shade the part shows
-    refs = _PRESETS.all()
-    names = Counter(min(refs, key=lambda ref: ref.distance(st.lab)).name for st in m.stripes)
+    names = Counter(_stripe_name(st.lab, m.body_lab) for st in m.stripes)
     seen_body = min(CABLE_COLOURS, key=lambda name: _PRESETS.get(name).distance(m.body_lab))
     seen_colour = names.most_common(1)[0][0]
     found = {
