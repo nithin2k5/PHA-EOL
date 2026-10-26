@@ -2768,6 +2768,99 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
     btn_rescan = _btn(cb_body, "Re-scan", BTN_NEUTRAL, pady=5, icon="refresh")
     btn_rescan.pack(fill="x", pady=(10, 0))
 
+    # Camera 2's own saturation, exposure and white balance (see
+    # vision_engine/config.py), tried out on the live preview. The device
+    # keeps what is set after it closes, so a cancel puts the old ones back.
+    from vision_engine.config import (TUNED_SOURCES, load_picture_controls,
+                                      save_picture_controls)
+    tuned = source in TUNED_SOURCES
+    saved_controls = load_picture_controls(source) if tuned else {}
+    # "shown" once the sliders start from what the camera has; "kept" on Save
+    pic = {"touched": False, "shown": saved_controls.get("saturation") is not None,
+           "kept": False}
+    sat_var = tk.DoubleVar(value=saved_controls.get("saturation") or 128)
+    exp_auto = tk.BooleanVar(value=saved_controls.get("exposure") is None)
+    exp_var = tk.DoubleVar(value=saved_controls.get("exposure") or -6)
+    wb_auto = tk.BooleanVar(value=saved_controls.get("white_balance") is None)
+    wb_var = tk.DoubleVar(value=saved_controls.get("white_balance") or 4600)
+    pic_rows = {}
+
+    def _controls_now():
+        return {"saturation": round(sat_var.get()) if pic["shown"] else None,
+                "exposure": None if exp_auto.get() else round(exp_var.get()),
+                "white_balance": None if wb_auto.get() else round(wb_var.get() / 100) * 100}
+
+    def _show_controls():
+        c = _controls_now()
+        pic_rows["saturation"][0].config(text="%d" % round(sat_var.get()))
+        e = c["exposure"]
+        pic_rows["exposure"][0].config(
+            text="Auto" if e is None else ("1/%d s" % 2 ** -e if e < 0 else "%d s" % 2 ** e))
+        wb = c["white_balance"]
+        pic_rows["white_balance"][0].config(text="Auto" if wb is None else "%d K" % wb)
+        for name, auto in (("exposure", exp_auto), ("white_balance", wb_auto)):
+            pic_rows[name][1].state(["disabled" if auto.get() else "!disabled"])
+
+    def _on_picture(*_a):
+        pic["touched"] = True
+        _show_controls()
+        if stream["s"] is not None:
+            stream["s"].set_controls(_controls_now())
+
+    def _picture_from_camera(s):
+        """Start the sliders from what the camera has, unless saved ones are."""
+        seen = s.controls()
+        if pic["shown"] or pic["touched"] or not seen:
+            return
+        pic["shown"] = True
+        if seen.get("saturation") is not None:
+            sat_var.set(seen["saturation"])
+            pic_rows["saturation"][1].config(to=max(255, seen["saturation"]))
+        if saved_controls.get("exposure") is None and -13 <= seen.get("exposure", 1) <= 0:
+            exp_var.set(seen["exposure"])
+        if saved_controls.get("white_balance") is None and \
+                2800 <= seen.get("white_balance", 0) <= 6500:
+            wb_var.set(seen["white_balance"])
+        _show_controls()
+
+    if tuned:
+        pc = _card(rail, "Picture")
+        pc.pack(fill="x", pady=(12, 0))
+        pb = pc.body
+
+        def _slider(name, label, var, lo, hi, auto_var=None):
+            head = tk.Frame(pb, bg=PANEL)
+            head.pack(fill="x")
+            tk.Label(head, text=label, bg=PANEL, fg=TXT_DIM, font=(FONT, 11)).pack(side="left")
+            value = tk.Label(head, text="", bg=PANEL, fg=ACCENT, font=(MONO, 11, "bold"))
+            value.pack(side="right")
+            if auto_var is not None:
+                ctk.CTkCheckBox(head, text="Auto", variable=auto_var, command=_on_picture,
+                                bg_color=PANEL, fg_color=ui.NAVY,
+                                hover_color=ui.ACCENT_ACTIVE, border_color=ui.BORDER_STRONG,
+                                text_color=TXT, checkbox_width=18, checkbox_height=18,
+                                corner_radius=4, width=60,
+                                font=(FONT, 10)).pack(side="right", padx=(0, 8))
+            scale = ttk.Scale(pb, from_=lo, to=hi, orient="horizontal", variable=var,
+                              command=_on_picture)
+            scale.pack(fill="x", pady=(3, 10))
+            pic_rows[name] = (value, scale)
+
+        _slider("saturation", "Saturation", sat_var, 0, 255)
+        _slider("exposure", "Exposure", exp_var, -13, 0, exp_auto)
+        _slider("white_balance", "White balance", wb_var, 2800, 6500, wb_auto)
+        _show_controls()
+        tk.Label(pb, text="Raise saturation until the stripes look clearly coloured, "
+                          "not further. Fix exposure and white balance so the picture "
+                          "doesn't change from part to part. Changes show in the "
+                          "preview at once and are kept on Save; re-teach the parts "
+                          "after changing them.",
+                 bg=PANEL, fg=TXT_FAINT, font=(FONT, 10), wraplength=215,
+                 justify="left", anchor="w").pack(fill="x")
+        pic_seen = tk.Label(pb, text="", bg=PANEL, fg=TXT_DIM, font=(MONO, 9),
+                            wraplength=215, justify="left", anchor="w")
+        pic_seen.pack(fill="x", pady=(8, 0))
+
     status = tk.Label(rail, text="", bg=BG, fg=TXT_DIM, font=(FONT, 11),
                       wraplength=250, justify="left", anchor="w")
     status.pack(fill="x", pady=(12, 0))
@@ -2776,6 +2869,13 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
 
     def _stop_stream():
         if stream["s"] is not None:
+            if pic["touched"] and not pic["kept"]:
+                s = stream["s"]
+                if s.index == cam["index"] and saved_controls:
+                    s.set_controls(saved_controls)
+                else:
+                    s.set_controls({"saturation": s.controls_at_open().get("saturation"),
+                                    "exposure": None, "white_balance": None})
             try:
                 stream["s"].release()
             except Exception:
@@ -2823,6 +2923,8 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
         status.config(text="", fg=TXT_DIM)
         stream["s"] = camera.acquire(idx, w, h)
         stream["index"] = idx
+        if pic["touched"]:
+            stream["s"].set_controls(_controls_now())
 
     def _on_res_change(*_a):
         _on_device_change()
@@ -2903,6 +3005,12 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
             if frame is not None:
                 preview.set_image(frame)
                 preview.set_hint("%d x %d" % (frame.shape[1], frame.shape[0]))
+                if tuned:
+                    _picture_from_camera(s)
+                    # A camera may refuse or round a setting
+                    seen = s.controls()
+                    pic_seen.config(text="Camera reports: " + ", ".join(
+                        "%s %g" % (name.replace("_", " "), v) for name, v in seen.items()))
             elif not s.is_alive():
                 preview.set_image(None)
                 preview.set_placeholder("Camera %d is not delivering frames."
@@ -2927,6 +3035,9 @@ def _open_camera_dialog(parent, source=None, title="Inspection Camera",
                 return
         try:
             _save_cam_cfg(idx, w, h, idx >= 0, source)
+            if tuned and idx >= 0 and pic["touched"]:
+                save_picture_controls(source, _controls_now())
+                pic["kept"] = True
             if check_key and check_now != check_was:
                 v_cfg = load_vision_config()
                 v_cfg[check_key] = check_now
