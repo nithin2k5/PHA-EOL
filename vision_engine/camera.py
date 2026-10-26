@@ -12,10 +12,6 @@ Cameras are opened through Media Foundation, as the Windows Camera app opens
 them: on the same camera it delivers twice DirectShow's frame rate at 1280x720,
 so a moving part blurs less. DirectShow is kept for a device Media Foundation
 can't open.
-
-A camera with picture controls saved (camera 2, see config.py) has them set
-on the device as it opens, and Camera Configuration changes them on the live
-stream while the operator watches the picture.
 """
 import threading
 import time
@@ -23,8 +19,6 @@ from typing import Optional, Tuple
 
 import cv2
 import numpy as np
-
-from .config import picture_controls_for
 
 _REGISTRY_LOCK = threading.Lock()
 _STREAMS: dict = {}
@@ -57,44 +51,6 @@ def open_capture(index: int, width: int = 0, height: int = 0):
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         return cap
     return None
-
-
-# The camera properties behind each picture control (see config.py)
-_PROPS = {"saturation": cv2.CAP_PROP_SATURATION,
-          "exposure": cv2.CAP_PROP_EXPOSURE,
-          "white_balance": cv2.CAP_PROP_WB_TEMPERATURE}
-
-
-def apply_controls(cap, controls: dict):
-    """Set picture controls on an open capture, best effort: cameras offer
-    different ones. None leaves exposure and white balance to the camera's
-    auto, and saturation as it is."""
-    if "saturation" in controls and controls["saturation"] is not None:
-        cap.set(cv2.CAP_PROP_SATURATION, float(controls["saturation"]))
-    if "exposure" in controls:
-        if controls["exposure"] is None:
-            # DirectShow's convention, which Media Foundation reads as on/off
-            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
-        else:
-            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-            cap.set(cv2.CAP_PROP_EXPOSURE, float(controls["exposure"]))
-    if "white_balance" in controls:
-        if controls["white_balance"] is None:
-            cap.set(cv2.CAP_PROP_AUTO_WB, 1)
-        else:
-            cap.set(cv2.CAP_PROP_AUTO_WB, 0)
-            cap.set(cv2.CAP_PROP_WB_TEMPERATURE, float(controls["white_balance"]))
-
-
-def read_controls(cap) -> dict:
-    """The picture controls as the camera reports them."""
-    seen = {}
-    for name, prop in _PROPS.items():
-        try:
-            seen[name] = cap.get(prop)
-        except cv2.error:
-            pass
-    return seen
 
 
 def probe(index: int) -> Optional[dict]:
@@ -148,12 +104,6 @@ class CameraStream:
         self._opened = threading.Event()
         self._open_ok = False
         self._thread = None
-        # Picture controls waiting to be set, set by the reader between
-        # frames: a capture mustn't be touched from two threads at once
-        self._controls_lock = threading.Lock()
-        self._pending = None
-        self._controls_at_open = {}
-        self._controls_seen = {}
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
@@ -167,11 +117,6 @@ class CameraStream:
         if cap is not None:
             self._cap = cap
             self._open_ok = True
-            self._controls_at_open = read_controls(cap)
-            saved = picture_controls_for(self.index)
-            if saved:
-                apply_controls(cap, saved)
-            self._controls_seen = read_controls(cap)
         else:
             self._running = False
         self._opened.set()
@@ -182,7 +127,6 @@ class CameraStream:
         # fast "camera unavailable".
         consecutive_failures = 0
         while self._running:
-            self._apply_pending()
             ret, frame = self._cap.read()
             if ret:
                 with self._frame_lock:
@@ -197,32 +141,8 @@ class CameraStream:
                 time.sleep(0.02)
 
         if self._cap is not None:
-            # Controls asked for as the stream closes, e.g. put back on cancel
-            self._apply_pending()
             self._cap.release()
             self._cap = None
-
-    def _apply_pending(self):
-        with self._controls_lock:
-            controls, self._pending = self._pending, None
-        if controls is not None and self._cap is not None:
-            apply_controls(self._cap, controls)
-            self._controls_seen = read_controls(self._cap)
-
-    # ── picture controls ────────────────────────────────────────────────────
-
-    def set_controls(self, controls: dict):
-        """Set picture controls (see apply_controls) on the device, between frames."""
-        with self._controls_lock:
-            self._pending = {**(self._pending or {}), **controls}
-
-    def controls(self) -> dict:
-        """The picture controls as the camera last reported them."""
-        return dict(self._controls_seen)
-
-    def controls_at_open(self) -> dict:
-        """The picture controls the camera had before any were set on it."""
-        return dict(self._controls_at_open)
 
     def wait_until_open(self, timeout: float = 5.0) -> bool:
         self._opened.wait(timeout)
