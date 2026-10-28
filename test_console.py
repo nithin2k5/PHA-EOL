@@ -4316,8 +4316,10 @@ class EOLTesterGUI:
             self.partRunningSerialExists = result is not None
             last = int(result['RUNNING_LOT_NUMBER'] or 0) if result else 0
 
-            # Tests saved before NG serials were kept can be ahead of the
-            # running serial; start after the highest serial used today
+            # A serial a duplicate-code NG found already taken, and tests
+            # saved by older versions, can be ahead of the running serial;
+            # start after the highest serial used today. NG parts saved
+            # with "-" cast to 0 and do not count.
             cursor.execute("""
                 SELECT MAX(CAST(TD_LOT_NUMBER AS UNSIGNED)) AS LAST_USED
                 FROM TBL_TEST_DATA
@@ -4967,17 +4969,22 @@ class EOLTesterGUI:
     def complete_test_cycle(self):
         """Complete the test cycle and save results"""
         try:
-            # Generate lot number and traceability code
-            self.generate_lot_and_traceability()
-            
-            # Check for duplicate traceability code
-            if self.check_traceability_duplicate():
-                messagebox.showwarning("Duplicate Code", 
+            # All tests passed, and each camera the app checked passed too,
+            # or had nothing to check. Only a passed part takes the next lot
+            # number and traceability code; an NG part is saved with "-".
+            passed = (self.passCounter == len(self.deviceToRead)
+                      and not self.camera_failed_part())
+            if passed:
+                self.generate_lot_and_traceability()
+
+            if not passed:
+                self.save_testing_data("NG")
+            elif self.check_traceability_duplicate():
+                # The serial is already taken, so the count stays past it
+                messagebox.showwarning("Duplicate Code",
                     f"Generated Traceability Code: {self.traceabilityCode} already exists. Saving as 'NG'.")
                 self.save_testing_data("NG")
-            elif self.passCounter == len(self.deviceToRead) and not self.camera_failed_part():
-                # All tests passed, and each camera the app checked passed
-                # too, or had nothing to check
+            else:
                 saved = self.save_testing_data("OK")
                 # Print barcode if configured, and only once the test is in
                 # the database
@@ -4988,10 +4995,7 @@ class EOLTesterGUI:
                         self.trace("LABEL NOT PRINTED - test data was not saved")
                         self.safe_update_message(
                             "Label not printed - the test data could not be saved.", "red")
-            else:
-                # Some tests failed
-                self.save_testing_data("NG")
-            
+
             # Update charts and displays
             self.update_charts()
             
@@ -5131,6 +5135,11 @@ class EOLTesterGUI:
         on a cable has its record behind it.
         """
         saved = False
+        # An NG part gets no lot number or traceability code
+        if status == "OK":
+            lot_no, trace_code = self.lotNo, self.traceabilityCode
+        else:
+            lot_no = trace_code = "-"
         try:
             connection = self.get_database_connection()
             if not connection:
@@ -5148,8 +5157,8 @@ class EOLTesterGUI:
             ]
 
             base_values = [
-                self.machineID, self.partNumber, self.lotNo,
-                self.traceabilityCode, datetime.today().date(), datetime.now(),
+                self.machineID, self.partNumber, lot_no,
+                trace_code, datetime.today().date(), datetime.now(),
                 self.L1MaxValue, self.P01Value, self.P02Value,
                 self.cam1Result, self.cam2Result, self.cam1Image, self.cam2Image,
                 status, self.current_employee_id
@@ -5196,7 +5205,7 @@ class EOLTesterGUI:
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s)
             """, (
-                self.lotNo, self.partNumber,
+                lot_no, self.partNumber,
                 *(measured.get(d) for d in devices),
                 self.cam1Result, self.cam2Result,
                 "PASS" if status == "OK" else "NG",
@@ -5207,14 +5216,14 @@ class EOLTesterGUI:
             connection.commit()
             saved = True
 
-            print(f"Test data saved: {status} - Lot: {self.lotNo}, Traceability: {self.traceabilityCode}")
-            self.trace(f"SAVED {status} - lot {self.lotNo}, {self.traceabilityCode}")
-            self.log_operator_action("TEST_SAVED", f"{status} - lot {self.lotNo}, {self.traceabilityCode}")
-            
-            # Every saved test used up its serial, NG included, so a reload
-            # carries on after it instead of handing the same code out again
-            self.update_part_running_serial(cursor)
+            print(f"Test data saved: {status} - Lot: {lot_no}, Traceability: {trace_code}")
+            self.trace(f"SAVED {status} - lot {lot_no}, {trace_code}")
+            self.log_operator_action("TEST_SAVED", f"{status} - lot {lot_no}, {trace_code}")
+
+            # Only a passed part uses up a serial, so the count carries on
+            # from the last pass, after a reload too
             if status == "OK":
+                self.update_part_running_serial(cursor)
                 self.count_ok_in_lot(cursor)
             connection.commit()
             
