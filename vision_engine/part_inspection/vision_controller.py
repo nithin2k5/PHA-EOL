@@ -30,7 +30,7 @@ from ..config import (DEFAULT_MATCH_THRESHOLD, ROOT_DIR, load_camera_config,
                       load_vision_config, save_vision_config)
 from ..enhance import MODEL_KEY as ENHANCED, enhance, for_model
 
-_MODELS_DIR = os.path.join(ROOT_DIR, "vision_models")
+_MODELS_ROOT = os.path.join(ROOT_DIR, "vision_models")
 
 
 @dataclass
@@ -51,16 +51,35 @@ class VisionResult:
     frame: Optional[np.ndarray] = None                      # frame that was judged
 
 
-def get_vision_controller() -> "VisionController":
-    return VisionController()
+def get_vision_controller(source: Optional[str] = None) -> "VisionController":
+    return VisionController(source)
 
 
 class VisionController:
-    """Headless part verification against taught templates."""
+    """Headless part verification against taught templates, on one camera.
 
-    def __init__(self):
+    `source` names the camera in camera_cfg.ini, "cam1" or "cam2"; by
+    default it is camera 1, the camera_source in vision_config.json. Each
+    camera has its own taught parts. Camera 1's keep the settings and the
+    folder they had before camera 2 had an object check too: part_mapping
+    and match_threshold, and vision_models itself. Another camera's are
+    named after it, e.g. cam2_part_mapping and vision_models/cam2.
+    """
+
+    def __init__(self, source: Optional[str] = None):
         self.config = load_vision_config()
+        self.source = source or self.config.get("camera_source", "cam1")
+        prefix = "" if self.source == "cam1" else self.source + "_"
+        self.mapping_key = prefix + "part_mapping"
+        self.threshold_key = prefix + "match_threshold"
+        self.enabled_key = "vision_enabled" if self.source == "cam1" else self.source + "_enabled"
+        self.models_dir = (_MODELS_ROOT if self.source == "cam1"
+                           else os.path.join(_MODELS_ROOT, self.source))
         self._model_cache: Dict[str, dict] = {}
+
+    @property
+    def default_threshold(self) -> float:
+        return self.config.get(self.threshold_key, DEFAULT_MATCH_THRESHOLD)
 
     def reload_config(self):
         self.config = load_vision_config()
@@ -69,8 +88,8 @@ class VisionController:
     # ── Camera ──────────────────────────────────────────────────────────────
 
     def cam_settings(self) -> tuple:
-        """(index, width, height) for the configured camera source."""
-        return load_camera_config(self.config.get("camera_source", "cam1"))
+        """(index, width, height) for this camera."""
+        return load_camera_config(self.source)
 
     def _capture_frame(self) -> Optional[np.ndarray]:
         index, width, height = self.cam_settings()
@@ -87,10 +106,10 @@ class VisionController:
     # ── Model I/O ───────────────────────────────────────────────────────────
 
     def _model_path(self, part_number: str) -> Optional[str]:
-        filename = self.config.get("part_mapping", {}).get(part_number)
+        filename = self.config.get(self.mapping_key, {}).get(part_number)
         if not filename:
             return None
-        path = os.path.join(_MODELS_DIR, filename)
+        path = os.path.join(self.models_dir, filename)
         return path if os.path.exists(path) else None
 
     def _load_model(self, part_number: str) -> Optional[dict]:
@@ -121,7 +140,21 @@ class VisionController:
         return self._model_path(part_number) is not None
 
     def get_mapped_parts(self) -> dict:
-        return dict(self.config.get("part_mapping", {}))
+        return dict(self.config.get(self.mapping_key, {}))
+
+    def _map(self, part_number: str, filename: Optional[str]):
+        """Point a part at a model file, or at none, and save it.
+
+        The file is read afresh first: the other camera's controller saves
+        its own parts to it, and writing this one's copy back would undo them.
+        """
+        self.config = load_vision_config()
+        mapping = self.config.setdefault(self.mapping_key, {})
+        if filename:
+            mapping[part_number] = filename
+        else:
+            mapping.pop(part_number, None)
+        save_vision_config(self.config)
 
     # ── Production Inspection ───────────────────────────────────────────────
 
@@ -140,7 +173,7 @@ class VisionController:
                 processing_time_ms=int((time.time() - start) * 1000),
             )
 
-        if not self.config.get("vision_enabled", True):
+        if not self.config.get(self.enabled_key, True):
             return _error("Vision inspection disabled")
 
         model = self._load_model(part_number)
@@ -184,7 +217,7 @@ class VisionController:
                 f"re-teach the part at this resolution, or use a larger test image"
             )
 
-        threshold = model.get("match_threshold", self.config.get("match_threshold", DEFAULT_MATCH_THRESHOLD))
+        threshold = model.get("match_threshold", self.default_threshold)
         elapsed = int((time.time() - start) * 1000)
 
         if best_score >= threshold:
@@ -250,17 +283,16 @@ class VisionController:
             ENHANCED: True,
         }
 
-        os.makedirs(_MODELS_DIR, exist_ok=True)
+        os.makedirs(self.models_dir, exist_ok=True)
         filename = f"{part_number}.npz"
-        model_path = os.path.join(_MODELS_DIR, filename)
+        model_path = os.path.join(self.models_dir, filename)
 
         save_dict = {"config": json.dumps(model_cfg)}
         for i, t in enumerate(templates):
             save_dict[f"template_{i}"] = t
         np.savez_compressed(model_path, **save_dict)
 
-        self.config.setdefault("part_mapping", {})[part_number] = filename
-        save_vision_config(self.config)
+        self._map(part_number, filename)
         self._model_cache.pop(part_number, None)
 
         return model_path
@@ -269,8 +301,7 @@ class VisionController:
         path = self._model_path(part_number)
         if path and os.path.exists(path):
             os.remove(path)
-        self.config.get("part_mapping", {}).pop(part_number, None)
-        save_vision_config(self.config)
+        self._map(part_number, None)
         self._model_cache.pop(part_number, None)
 
     def model_info(self, part_number: str) -> Optional[dict]:
@@ -286,7 +317,7 @@ class VisionController:
         return {
             "references": model.get("num_references", len(templates)),
             "created": model.get("created", "—"),
-            "threshold": model.get("match_threshold", self.config.get("match_threshold", DEFAULT_MATCH_THRESHOLD)),
+            "threshold": model.get("match_threshold", self.default_threshold),
             "roi": roi,
             "rois": rois,
             "template_size": sizes[0] if sizes else (0, 0),
@@ -318,9 +349,8 @@ class VisionController:
         self._model_cache.pop(part_number, None)
 
     def map_model_file(self, part_number: str, filename: str):
-        """Point a part number at an existing model file in vision_models/."""
-        if not os.path.exists(os.path.join(_MODELS_DIR, filename)):
+        """Point a part number at an existing model file in this camera's folder."""
+        if not os.path.exists(os.path.join(self.models_dir, filename)):
             raise ValueError(f"Model file '{filename}' not found.")
-        self.config.setdefault("part_mapping", {})[part_number] = filename
-        save_vision_config(self.config)
+        self._map(part_number, filename)
         self._model_cache.pop(part_number, None)

@@ -1,7 +1,8 @@
 """
 vision_engine/stripes/stripe_check.py
 =====================================
-Checks the painted stripes on a cable with the second camera ("cam2").
+Checks the painted stripes on a cable, with either camera. Each camera has
+its own taught parts and its own learnt colours (see StripeCheck).
 
 Each part number has one or more groups of painted bands round its cable,
 for example three yellow stripes near one end and two red ones near the
@@ -55,9 +56,10 @@ from marker_engine.evaluation import INDETERMINATE
 from .. import camera, captures
 from ..config import ROOT_DIR, load_camera_config
 
-CAMERA_SOURCE = "cam2"
-
-_MODELS_DIR = os.path.join(ROOT_DIR, "vision_models", "stripes")
+_MODELS_ROOT = os.path.join(ROOT_DIR, "vision_models")
+# Each camera's stripe parts, in a folder of their own. Camera 2's stay
+# where they were before camera 1 had a stripe check too.
+_MODEL_FOLDERS = {"cam2": "stripes"}
 
 # Saved in every model taught with marker_engine; a model without it was
 # taught with the earlier stripe check and has to be re-taught
@@ -69,11 +71,10 @@ ENGINE = "marker_engine"
 # taught one can't pass.
 _PRESETS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "colour_presets.json")
-_PRESETS = PresetStore(_PRESETS_FILE)
 _SHIPPED = PresetStore(_PRESETS_FILE)
-COLOURS = tuple(_PRESETS.names())
+COLOURS = tuple(_SHIPPED.names())
 
-# Names camera 2 no longer tells apart, and the colour each now counts as:
+# Names the cameras no longer tell apart, and the colour each now counts as:
 # pale yellow is yellow, and a part taught as pale yellow is judged as yellow
 _MERGED = {"pale yellow": "yellow"}
 
@@ -105,58 +106,30 @@ class _AnyShade(ColourReference):
         return min(d, min(dh, 360.0 - dh) / self.hue_tol)
 
 
-def _stripe_shades(recipe: Recipe) -> Optional[ColourReference]:
+def _stripe_shades(recipe: Recipe, presets: PresetStore) -> Optional[ColourReference]:
     """The taught stripe colour, taking its other shades (see _ANY_SHADE),
     or None when it has no others."""
     band = _ANY_SHADE.get(recipe.stripe_colour)
-    taught = recipe.stripe_reference(_PRESETS)
+    taught = recipe.stripe_reference(presets)
     if band is None or taught is None:
         return None
     return _AnyShade(taught, **band)
 
-# Colours as camera 2 sees them, learnt from each part taught under the names
-# the operator confirmed, and kept on this machine. They replace the marker
-# app's values, which a different camera and light can put a name or more
-# away, so a colour corrected once is named rightly from then on.
-_LEARNT_COLOURS = os.path.join(_MODELS_DIR, "colours.json")
-
-
 def _fits(ref: dict) -> bool:
     """True if a shade can be the colour it is named: a coloured shade can't
     be black, grey or white, nor a colourless one red or yellow. A part saved
-    under a wrong name would otherwise teach camera 2 that name for good."""
+    under a wrong name would otherwise teach the camera that name for good."""
     shipped = _SHIPPED.get(ref.get("name"))
     return (shipped is not None
             and ColourReference.from_dict(ref).achromatic == shipped.achromatic)
 
 
-def _load_learnt() -> List[dict]:
+def _load_learnt(path: str) -> List[dict]:
     try:
-        with open(_LEARNT_COLOURS, "r") as f:
+        with open(path, "r") as f:
             return [d for d in json.load(f).get("colours", []) if _fits(d)]
     except (OSError, ValueError):
         return []
-
-
-for _ref in _load_learnt():
-    _PRESETS.put(ColourReference.from_dict(_ref))
-
-
-def _learn_colours(recipes: List[dict]):
-    """Keep the cable and stripe colours just taught as camera 2's own."""
-    learnt = {d["name"]: d for d in _load_learnt()}
-    for recipe in recipes:
-        # A cable and stripes under one name are two shades; neither is kept
-        if recipe.get("body_colour") == recipe.get("stripe_colour"):
-            continue
-        for ref in (recipe.get("body_ref"), recipe.get("stripe_ref")):
-            if ref and _fits(ref):
-                learnt[ref["name"]] = ref
-                _PRESETS.put(ColourReference.from_dict(ref))
-    os.makedirs(_MODELS_DIR, exist_ok=True)
-    with open(_LEARNT_COLOURS, "w") as f:
-        json.dump({"colours": list(learnt.values())}, f, indent=4)
-        f.write("\n")
 
 
 # The cable itself is only ever black or grey
@@ -168,7 +141,7 @@ CABLE_COLOURS = ("black", "grey")
 STRIPE_CHROMA_MIN = 12.0
 
 
-def _stripe_name(lab, body_lab) -> str:
+def _stripe_name(lab, body_lab, presets: PresetStore) -> str:
     """The colour a stripe of shade `lab`, on a cable of shade `body_lab`, is.
 
     The camera tints the whole picture and washes colours out: a green
@@ -182,7 +155,7 @@ def _stripe_name(lab, body_lab) -> str:
     """
     lab = np.array(lab, np.float32)
     lab[1:] -= np.asarray(body_lab, np.float32)[1:]
-    refs = _PRESETS.all()
+    refs = presets.all()
     if float(chroma(lab)) <= STRIPE_CHROMA_MIN:
         return min((r for r in refs if r.achromatic), key=lambda r: r.distance(lab)).name
     hue = float(hue_deg(lab))
@@ -192,7 +165,7 @@ def _stripe_name(lab, body_lab) -> str:
         return min(dh, 360.0 - dh) + 0.5 * abs(float(lab[0] - ref.lab[0]))
     return min((r for r in refs if not r.achromatic), key=apart).name
 
-# Frames taken from camera 2 for teaching a good part, as the marker app
+# Frames taken from the camera for teaching a good part, as the marker app
 # takes several auto samples so the tolerances cover frame-to-frame noise
 TEACH_FRAMES = 5
 
@@ -251,29 +224,6 @@ class StripeResult:
 
 # ── Model storage ───────────────────────────────────────────────────────────
 
-def _model_path(part_number: str) -> str:
-    safe = re.sub(r'[^A-Za-z0-9._-]', '_', part_number)
-    return os.path.join(_MODELS_DIR, f"{safe}.json")
-
-
-def load_model(part_number: str) -> Optional[dict]:
-    path = _model_path(part_number)
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r") as f:
-            model = json.load(f)
-    except (OSError, ValueError):
-        return None
-    for group in model.get("groups", []):
-        for key in ("body_colour", "stripe_colour"):
-            group[key] = _MERGED.get(group.get(key), group.get(key))
-        for key in ("body_ref", "stripe_ref"):
-            if group.get(key):
-                group[key]["name"] = _MERGED.get(group[key]["name"], group[key]["name"])
-    return model
-
-
 def needs_reteach(model: dict) -> bool:
     """True for a model taught with the earlier stripe check."""
     return model.get("engine") != ENGINE
@@ -299,57 +249,137 @@ def describe(model: dict) -> str:
     return "%s: %s" % (bodies.pop(), stripes) if len(bodies) == 1 else stripes
 
 
-def has_model(part_number: str) -> bool:
-    return load_model(part_number) is not None
+class StripeCheck:
+    """The stripe check on one camera: its taught parts and its colours.
 
-
-def taught_parts() -> List[str]:
-    """Part numbers with a stripe model, as stored in the files.
-
-    Read from inside each file, because a file name has had characters that
-    are not allowed in file names replaced.
+    `source` names the camera in camera_cfg.ini, "cam1" or "cam2". Get one
+    with for_camera().
     """
-    if not os.path.isdir(_MODELS_DIR):
-        return []
-    parts = []
-    for name in sorted(os.listdir(_MODELS_DIR)):
-        if not name.endswith(".json"):
-            continue
+
+    def __init__(self, source: str):
+        self.source = source
+        self.name = "Camera " + source[-1]
+        self.capture_name = source.upper()      # "CAM2", as captures names pictures
+        self.models_dir = os.path.join(
+            _MODELS_ROOT, _MODEL_FOLDERS.get(source, f"{source}_stripes"))
+        # Colours as this camera sees them, learnt from each part taught
+        # under the names the operator confirmed, and kept on this machine.
+        # They replace the marker app's values, which a different camera and
+        # light can put a name or more away, so a colour corrected once is
+        # named rightly from then on.
+        self.learnt_file = os.path.join(self.models_dir, "colours.json")
+        self.presets = PresetStore(_PRESETS_FILE)
+        for ref in _load_learnt(self.learnt_file):
+            self.presets.put(ColourReference.from_dict(ref))
+
+    def _learn_colours(self, recipes: List[dict]):
+        """Keep the cable and stripe colours just taught as this camera's own."""
+        learnt = {d["name"]: d for d in _load_learnt(self.learnt_file)}
+        for recipe in recipes:
+            # A cable and stripes under one name are two shades; neither is kept
+            if recipe.get("body_colour") == recipe.get("stripe_colour"):
+                continue
+            for ref in (recipe.get("body_ref"), recipe.get("stripe_ref")):
+                if ref and _fits(ref):
+                    learnt[ref["name"]] = ref
+                    self.presets.put(ColourReference.from_dict(ref))
+        os.makedirs(self.models_dir, exist_ok=True)
+        with open(self.learnt_file, "w") as f:
+            json.dump({"colours": list(learnt.values())}, f, indent=4)
+            f.write("\n")
+
+    def _model_path(self, part_number: str) -> str:
+        safe = re.sub(r'[^A-Za-z0-9._-]', '_', part_number)
+        return os.path.join(self.models_dir, f"{safe}.json")
+
+    def load_model(self, part_number: str) -> Optional[dict]:
+        path = self._model_path(part_number)
+        if not os.path.exists(path):
+            return None
         try:
-            with open(os.path.join(_MODELS_DIR, name), "r") as f:
-                pno = json.load(f).get("part_number")
+            with open(path, "r") as f:
+                model = json.load(f)
         except (OSError, ValueError):
-            continue
-        if pno:
-            parts.append(pno)
-    return parts
+            return None
+        for group in model.get("groups", []):
+            for key in ("body_colour", "stripe_colour"):
+                group[key] = _MERGED.get(group.get(key), group.get(key))
+            for key in ("body_ref", "stripe_ref"):
+                if group.get(key):
+                    group[key]["name"] = _MERGED.get(group[key]["name"], group[key]["name"])
+        return model
+
+    def has_model(self, part_number: str) -> bool:
+        return self.load_model(part_number) is not None
+
+    def taught_parts(self) -> List[str]:
+        """Part numbers with a stripe model, as stored in the files.
+
+        Read from inside each file, because a file name has had characters
+        that are not allowed in file names replaced.
+        """
+        if not os.path.isdir(self.models_dir):
+            return []
+        parts = []
+        for name in sorted(os.listdir(self.models_dir)):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(self.models_dir, name), "r") as f:
+                    pno = json.load(f).get("part_number")
+            except (OSError, ValueError):
+                continue
+            if pno:
+                parts.append(pno)
+        return parts
+
+    def save_model(self, model: dict):
+        os.makedirs(self.models_dir, exist_ok=True)
+        with open(self._model_path(model["part_number"]), "w") as f:
+            json.dump(model, f, indent=4)
+            f.write("\n")
+
+    def delete_model(self, part_number: str):
+        path = self._model_path(part_number)
+        if os.path.exists(path):
+            os.remove(path)
+
+    # ── Camera ──────────────────────────────────────────────────────────────
+
+    def camera_settings(self) -> Tuple[int, int, int]:
+        """(index, width, height) of the camera; index -1 when none is chosen."""
+        return load_camera_config(self.source)
+
+    def capture_frame(self) -> Optional[np.ndarray]:
+        index, width, height = self.camera_settings()
+        if index < 0:
+            return None
+        return camera.grab(index, width, height)
+
+    # ── Teaching and inspection, with this camera's colours ─────────────────
+
+    def read_group(self, frame, roi, area=None, body=None, colour=None, count=None):
+        return read_group(frame, roi, area, body, colour, count, presets=self.presets)
+
+    def teach(self, part_number: str, frames, groups: List[dict]) -> dict:
+        """Teach a good part's stripe groups (see teach()) and save them."""
+        model = teach(part_number, frames, groups)
+        self.save_model(model)
+        self._learn_colours(model["groups"])
+        return model
+
+    def inspect(self, part_number: str, frame: Optional[np.ndarray] = None) -> "StripeResult":
+        return inspect(self, part_number, frame)
 
 
-def save_model(model: dict):
-    os.makedirs(_MODELS_DIR, exist_ok=True)
-    with open(_model_path(model["part_number"]), "w") as f:
-        json.dump(model, f, indent=4)
-        f.write("\n")
+_CHECKS = {}
 
 
-def delete_model(part_number: str):
-    path = _model_path(part_number)
-    if os.path.exists(path):
-        os.remove(path)
-
-
-# ── Camera ──────────────────────────────────────────────────────────────────
-
-def camera_settings() -> Tuple[int, int, int]:
-    """(index, width, height) of camera 2; index -1 when none is chosen."""
-    return load_camera_config(CAMERA_SOURCE)
-
-
-def capture_frame() -> Optional[np.ndarray]:
-    index, width, height = camera_settings()
-    if index < 0:
-        return None
-    return camera.grab(index, width, height)
+def for_camera(source: str) -> StripeCheck:
+    """The stripe check on camera `source`, "cam1" or "cam2"."""
+    if source not in _CHECKS:
+        _CHECKS[source] = StripeCheck(source)
+    return _CHECKS[source]
 
 
 def capture_frames(stream, n: int = TEACH_FRAMES) -> List[np.ndarray]:
@@ -478,7 +508,8 @@ def _check_boxes(box: Optional[dict], area: Optional[dict]):
 
 def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
                body: Optional[str] = None, colour: Optional[str] = None,
-               count: Optional[int] = None) -> Tuple[dict, List[np.ndarray]]:
+               count: Optional[int] = None,
+               presets: Optional[PresetStore] = None) -> Tuple[dict, List[np.ndarray]]:
     """What the engine sees of one group on a good part, without saving it.
 
     `roi` is the stripes ROI and `area` the cable ROI round it. Returns what
@@ -491,6 +522,7 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
     stripes must be found. Raises ValueError with an operator-readable reason
     when the group can't be taught from this picture.
     """
+    presets = presets or _SHIPPED
     _check_boxes(roi, area)
     recipe = _with_pitch(frame, _recipe("read", frame, {"roi": roi, "area": area}))
     turned_frame, turned = _turn(frame, recipe)
@@ -511,8 +543,8 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
                          % (len(m.stripes), count))
     # The nearest name, even one the shade is outside of: the operator
     # confirms it, and the check is taught the shade the part shows
-    names = Counter(_stripe_name(st.lab, m.body_lab) for st in m.stripes)
-    seen_body = min(CABLE_COLOURS, key=lambda name: _PRESETS.get(name).distance(m.body_lab))
+    names = Counter(_stripe_name(st.lab, m.body_lab, presets) for st in m.stripes)
+    seen_body = min(CABLE_COLOURS, key=lambda name: presets.get(name).distance(m.body_lab))
     seen_colour = names.most_common(1)[0][0]
     found = {
         "body": body or seen_body,
@@ -527,7 +559,7 @@ def read_group(frame: np.ndarray, roi: dict, area: Optional[dict] = None,
 
 
 def teach(part_number: str, frames, groups: List[dict]) -> dict:
-    """Teach each stripe group of a good part and save them for the part.
+    """Teach each stripe group of a good part. StripeCheck.teach() saves it.
 
     `frames` is one picture of the good part, or several taken one after
     another (see capture_frames); the ROIs are drawn on the first. Each is
@@ -575,22 +607,20 @@ def teach(part_number: str, frames, groups: List[dict]) -> dict:
         "frame_size": [fw, fh],
         "groups": recipes,
     }
-    save_model(model)
-    _learn_colours(recipes)
     return model
 
 
 # ── Inspection ──────────────────────────────────────────────────────────────
 
-def _judge(frame: np.ndarray, recipe: Recipe):
+def _judge(frame: np.ndarray, recipe: Recipe, presets: PresetStore):
     """The engine's measurement and verdict for one group in one frame."""
     turned_frame, turned = _turn(frame, recipe)
     m = detect(turned_frame, turned)
-    shades = _stripe_shades(turned)
+    shades = _stripe_shades(turned, presets)
     if shades is not None:
         turned = turned.copy()
-        turned.stripe_reference = lambda presets: shades
-    return m, evaluate(m, turned, _PRESETS)
+        turned.stripe_reference = lambda _presets: shades
+    return m, evaluate(m, turned, presets)
 
 
 # ── Terminal log ────────────────────────────────────────────────────────────
@@ -660,13 +690,13 @@ def _group_result(recipe: Recipe, m, verdict, frame_h: int, verdicts=None) -> Gr
     return result
 
 
-def _inspect_still(part_number: str, frame: np.ndarray,
-                   groups: List[Recipe]) -> List[GroupResult]:
+def _inspect_still(part_number: str, frame: np.ndarray, groups: List[Recipe],
+                   presets: PresetStore) -> List[GroupResult]:
     """Judge each group on one still picture."""
     results = []
     for n, recipe in enumerate(groups, start=1):
         try:
-            m, verdict = _judge(frame, recipe)
+            m, verdict = _judge(frame, recipe, presets)
         except SetupError as e:
             results.append(GroupResult(ok=False, colour=recipe.stripe_colour,
                                        expected=recipe.stripe_count,
@@ -679,8 +709,9 @@ def _inspect_still(part_number: str, frame: np.ndarray,
     return results
 
 
-def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
-    """Judge each group with the engine's inspection cycle on camera 2.
+def _inspect_live(check: StripeCheck, part_number: str, stream, groups: List[Recipe],
+                  frame_size):
+    """Judge each group with the engine's inspection cycle on the check's camera.
 
     As in the marker app, a result needs several fresh frames in a row with
     the cable still and the same verdict; a cable that keeps moving until
@@ -707,7 +738,7 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
         cycle.trigger(started, count - 1)
     while frame is not None:
         if (frame.shape[1], frame.shape[0]) != tuple(frame_size):
-            return None, (f"Camera 2 gives {frame.shape[1]}x{frame.shape[0]} frames, "
+            return None, (f"{check.name} gives {frame.shape[1]}x{frame.shape[0]} frames, "
                           f"but this part was taught at {frame_size[0]}x{frame_size[1]}. "
                           f"Re-teach it.")
         now = time.time()
@@ -715,7 +746,7 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
             if done[i] is not None:
                 continue
             try:
-                m, verdict = _judge(frame, recipe)
+                m, verdict = _judge(frame, recipe, check.presets)
             except SetupError as e:
                 done[i] = GroupResult(ok=False, colour=recipe.stripe_colour,
                                       expected=recipe.stripe_count,
@@ -749,7 +780,7 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
             break
         frame, count = stream.read_after(count, timeout=2.0)
     if any(d is None for d in done):
-        return None, "Camera 2 stopped giving frames"
+        return None, f"{check.name} stopped giving frames"
 
     # The frame shown is the one the first group's result was judged on
     first = done[0]
@@ -768,10 +799,11 @@ def _inspect_live(part_number: str, stream, groups: List[Recipe], frame_size):
     return results, shown_frame
 
 
-def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResult:
+def inspect(check: StripeCheck, part_number: str,
+            frame: Optional[np.ndarray] = None) -> StripeResult:
     """Check one part's stripes: every taught group must pass.
 
-    By default judges camera 2 with the engine's inspection cycle (see
+    By default judges the check's camera with the engine's inspection cycle (see
     _inspect_live). Pass `frame` to judge a still image instead.
     """
     start = time.time()
@@ -783,7 +815,7 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
             processing_time_ms=int((time.time() - start) * 1000),
         )
 
-    model = load_model(part_number)
+    model = check.load_model(part_number)
     if model is None:
         return _error(f"No stripe model for '{part_number}'")
     if needs_reteach(model):
@@ -802,14 +834,14 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
         if (frame.shape[1], frame.shape[0]) != (fw, fh):
             return _error(f"This picture is {frame.shape[1]}x{frame.shape[0]}, "
                           f"but this part was taught at {fw}x{fh}.")
-        results = _inspect_still(part_number, frame, groups)
+        results = _inspect_still(part_number, frame, groups, check.presets)
     else:
-        index, width, height = camera_settings()
+        index, width, height = check.camera_settings()
         stream = camera.acquire(index, width, height) if index >= 0 else None
         if stream is None:
-            return _error("Camera 2 not available")
+            return _error(f"{check.name} not available")
         try:
-            results, frame = _inspect_live(part_number, stream, groups,
+            results, frame = _inspect_live(check, part_number, stream, groups,
                                            model["frame_size"])
         finally:
             stream.release()
@@ -836,7 +868,7 @@ def inspect(part_number: str, frame: Optional[np.ndarray] = None) -> StripeResul
           f"({int((time.time() - start) * 1000)} ms)")
     if judgement == "ERROR" and live:
         # Kept as captured, so the frame can be judged again off the line
-        saved = captures.save_raw(frame, "CAM2", part_number)
+        saved = captures.save_raw(frame, check.capture_name, part_number)
         if saved:
             print(f"[STRIPES] {part_number}: frame saved to {saved}")
     boxes = [b for r in results for b in r.stripe_boxes]

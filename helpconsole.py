@@ -135,9 +135,11 @@ class HelpConsole(Page):
                           "cameras and scanners."),
             ("Settings", "The models each part number is tested against. "
                          "Asks for a login."),
-            ("Vision", "The camera, the pass threshold, and teaching and "
-                       "testing the parts the camera checks. Asks for a "
-                       "login."),
+            ("Vision", "Both cameras, each with a stripe check and an "
+                       "object check: CAM1 - STRIPES, CAM1 - OBJ, CAM2 - "
+                       "STRIPES and CAM2 - OBJ. Teach and test the parts "
+                       "each one checks. A camera fails a part if any check "
+                       "taught for it there fails. Asks for a login."),
             ("Test", "Runs a part through its test cycle. This is the console "
                      "the application opens into."),
             ("Work Data", "Search past results by part number, date and "

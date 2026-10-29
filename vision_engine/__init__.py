@@ -1,10 +1,11 @@
 """
 vision_engine
 =============
-The camera checks, each in its own folder:
+The camera checks, each in its own folder. Either camera can run either
+check, each with its own taught parts:
 
-  part_inspection/  camera 1: the right part is in the fixture
-  stripes/          camera 2: the painted stripes on the cable
+  part_inspection/  the object check: the right part is in the fixture
+  stripes/          the stripe check: the painted stripes on the cable
 
 and what they share: opening cameras (camera.py), evening out the light
 (enhance.py), the pictures kept with each test (captures.py) and the camera

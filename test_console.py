@@ -23,9 +23,9 @@ import db
 import ui
 from plc_address import bit_address
 
-# Camera 2 checks the stripes on the cable, and both cameras' pictures are
-# kept with each test. Without OpenCV the console still runs, camera 2 shows
-# OFF and no pictures are kept.
+# Each camera checks the stripes on the cable, the part in the fixture, or
+# both, and both cameras' pictures are kept with each test. Without OpenCV
+# the console still runs, camera 2 shows OFF and no pictures are kept.
 try:
     import cv2
     import numpy as np
@@ -535,7 +535,7 @@ class EOLTesterGUI:
         self.camera_checks_done = False     # this test's checks are in
         self.after_camera_checks_do = None  # waiting for them, to save the part
         self.cam1_by_app = False            # camera 1 judged here, not by the PLC
-        self.cam2_no_cable = False          # camera 2 found no cable in the fixture
+        self.no_cable = False               # a stripe check found no cable in the fixture
         self.resetPLCOnFormClosing = False
         self.machineOnPLCCoilAddress = ""
         self.alertOnPLCCoilAddress = ""
@@ -853,10 +853,11 @@ class EOLTesterGUI:
                 self.safe_update_message("The part changed during the camera check - "
                                          "press START again.", "red")
                 return
-            if self.cam2_no_cable:
+            if self.no_cable:
                 # Nothing there to fail; the pop-up has said so
                 self.trace(f"NO CABLE - part {part}, test not started")
-                self.log_operator_action("TEST_NO_CABLE", "Camera 2 found no cable, test not started")
+                self.log_operator_action("TEST_NO_CABLE", "No cable found by the cameras, "
+                                                          "test not started")
                 self.safe_update_message("No cable in the fixture - place the cable and "
                                          "press START again.", "red")
             elif self.camera_failed_part():
@@ -1861,9 +1862,13 @@ class EOLTesterGUI:
         self.safe_update_message("System ready.", "green")
 
     @staticmethod
-    def camera1_source():
-        """Camera 1 is the camera Vision Settings sets up for inspection."""
-        return load_vision_config().get("camera_source", "cam1")
+    def camera_source(number):
+        """Where camera `number` is kept in camera_cfg.ini: camera 1 is the
+        camera_source in vision_config.json, camera 2 is "cam2"."""
+        return load_vision_config().get("camera_source", "cam1") if number == 1 else "cam2"
+
+    def camera_view(self, number):
+        return self.cam1_view if number == 1 else self.cam2_view
 
     def open_cameras(self):
         """Keep the USB cameras streaming while the console is open.
@@ -1883,9 +1888,9 @@ class EOLTesterGUI:
 
     def unconfigured_cameras(self):
         """Names of the ticked cameras with no device chosen, e.g. ["Camera 2"]."""
-        sources = ((1, self.camera1_source()), (2, stripe_check.CAMERA_SOURCE))
-        return [f"Camera {number}" for number, source in sources
-                if self.camera_check_on(number) and load_camera_config(source)[0] < 0]
+        return [f"Camera {number}" for number in (1, 2)
+                if self.camera_check_on(number)
+                and load_camera_config(self.camera_source(number))[0] < 0]
 
     def cameras_ready_for_test(self):
         """True if a test may start; otherwise abort it and say which camera is missing.
@@ -1914,12 +1919,13 @@ class EOLTesterGUI:
 
     def start_camera_streams(self):
         """Open each camera that is set up and show it on its live view."""
-        for source, view in ((self.camera1_source(), self.cam1_view),
-                             (stripe_check.CAMERA_SOURCE, self.cam2_view)):
+        for number in (1, 2):
+            source = self.camera_source(number)
             index, width, height = load_camera_config(source)
             if index >= 0 and source not in self.camera_streams:
                 self.camera_streams[source] = camera.acquire(index, width, height)
-            view.set_stream(self.camera_streams.get(source), "Not set up\n(click to choose)")
+            self.camera_view(number).set_stream(self.camera_streams.get(source),
+                                                "Not set up\n(click to choose)")
 
     def stop_camera_streams(self, note=""):
         for view in (self.cam1_view, self.cam2_view):
@@ -1941,16 +1947,13 @@ class EOLTesterGUI:
             self.safe_update_message("Wait for the camera check to finish.", "red")
             return
         import vision_settings
-        if number == 1:
-            source, title = self.camera1_source(), "Camera 1 (missing parts)"
-        else:
-            source, title = stripe_check.CAMERA_SOURCE, "Camera 2 (stripes)"
         self.stop_camera_streams("Setting up…")
         was_on = self.camera_check_saved(number)
         self.camera_check_user = None
         try:
             vision_settings._open_camera_dialog(
-                self.root, source, title, check_key=self.CAMERA_CHECK_KEYS[number],
+                self.root, self.camera_source(number), f"Camera {number}",
+                check_key=self.CAMERA_CHECK_KEYS[number],
                 allow_check_change=lambda window: self.allow_camera_check_change(number,
                                                                                   window))
         finally:
@@ -1968,38 +1971,39 @@ class EOLTesterGUI:
                 f"Camera {number} check off - it will not check the parts.",
                 "green" if on else "red")
 
-    def grab_camera1(self):
-        """A frame from camera 1, or None if it isn't a USB camera set up here."""
-        index, width, height = load_camera_config(self.camera1_source())
+    def grab_camera(self, number):
+        """A frame from camera `number`, or None if it isn't a USB camera set up here."""
+        index, width, height = load_camera_config(self.camera_source(number))
         return camera.grab(index, width, height) if index >= 0 else None
 
     def show_camera_idle(self, number):
         """Show whether a camera is on or off, until a test gives it PASS or NG."""
-        view = self.cam1_view if number == 1 else self.cam2_view
+        view = self.camera_view(number)
         if self.camera_check_on(number):
             view.set_status("ON", self.SKY)
         else:
             view.set_status("OFF", self.SILVER)
 
-    def update_cam2_status(self, result):
-        """Show camera 2's verdict: PASS, NG, ERROR, OFF or CHECKING."""
+    def set_camera_status(self, number, result):
+        """Show a camera's verdict: PASS, NG, ERROR, OFF or CHECKING."""
         fills = {"PASS": '#00FF00', "NG": '#FF0000', "ERROR": '#FFA500',
                  "OFF": self.SILVER, "CHECKING": self.SKY}
-        self.cam2_view.set_status(result, fills.get(result, self.SKY))
+        self.camera_view(number).set_status(result, fills.get(result, self.SKY))
 
     CAMERA_NG_POPUP_MS = 4000
     CAMERA_NG_IMAGE_WIDTH = 480
-    # Camera 2's cable ROIs and stripes, by their group's verdict (BGR)
+    # A stripe check's cable ROIs and stripes, by their group's verdict (BGR)
     REGION_INK = {"OK": (0, 160, 0), "NG": (0, 0, 255), "ERROR": (0, 165, 255)}
 
-    def with_stripe_regions(self, result):
-        """A copy of camera 2's judged frame with each stripe group drawn on it.
+    def with_stripe_regions(self, result, img=None):
+        """A copy of `img`, by default the stripe check's judged frame, with
+        each stripe group drawn on it.
 
         Each group's cable ROI is drawn and its stripes outlined, green if
         that group passed, red if NG and orange if it couldn't be judged, so
         a picture shows which group failed.
         """
-        img = result.frame.copy()
+        img = (result.frame if img is None else img).copy()
         thick = max(2, img.shape[1] // 320)
         scale = max(0.5, img.shape[1] / 1280)
         several = len(result.groups) > 1
@@ -2019,8 +2023,8 @@ class EOLTesterGUI:
         """Flash "CAM1 CHECK RESULT: NG" over the console for four seconds.
 
         `cameras` lists (name, frame) for each camera that judged NG; each
-        frame is shown as judged, with what was found outlined and, for
-        camera 2, the region it searched. With `verdict` "ERROR" it says
+        frame is shown as judged, with what was found outlined and, for a
+        stripe check, the region it searched. With `verdict` "ERROR" it says
         `result` instead, e.g. "NO CABLE", in orange. It takes no click and
         holds neither the keyboard nor the test, so the PLC carries on while
         it shows. A newer one replaces it.
@@ -2071,16 +2075,88 @@ class EOLTesterGUI:
         """PASS, NG or ERROR for a vision or stripe check result."""
         return "PASS" if result.ok else "NG" if result.judgement == "NG" else "ERROR"
 
+    def taught_checks(self, number, part_number):
+        """The checks taught for a part on camera `number`, as (name, check)
+        pairs: its stripe check, then its object check, each only if the
+        part has one there."""
+        if not part_number:
+            return []
+        source = self.camera_source(number)
+        checks = (("STRIPES", stripe_check.for_camera(source)),
+                  ("OBJECT", VisionController(source)))
+        return [(name, check) for name, check in checks if check.has_model(part_number)]
+
+    def check_camera(self, number, checks, part_number):
+        """Run each of a camera's checks on the part, on the worker thread.
+
+        Returns what the camera found: its verdict, why, its picture with what
+        each check found drawn on it, the picture's saved path, and whether a
+        stripe check found no cable. The camera passes when every check
+        passes; it is NG when one finds a wrong part, and ERROR when one
+        couldn't judge it. With no cable in the fixture it is ERROR whatever
+        else was found, as there is no part to judge.
+        """
+        tag = f"CAM{number}"
+        found = {"verdict": "ERROR", "problems": [], "seen": [], "frame": None,
+                 "image": None, "no_cable": False}
+        verdicts, pictures = [], []
+        for name, check in checks:
+            try:
+                result = check.inspect(part_number)
+            except Exception as e:
+                result, error = None, str(e)
+            else:
+                error = result.error
+            verdict = self.verdict_of(result) if result else "ERROR"
+            verdicts.append(verdict)
+            if verdict != "PASS":
+                found["problems"].append(f"{name} {verdict}: {error}")
+            if result is None:
+                continue
+            if name == "STRIPES":
+                found["no_cable"] = found["no_cable"] or result.no_cable
+                if result.seen:
+                    found["seen"].append(result.seen)
+            print(f"[{tag}] {part_number} {name}: {verdict} "
+                  f"({(getattr(result, 'seen', '') or result.error or 'part found')})")
+            if result.frame is not None:
+                pictures.append((name, result, verdict))
+
+        if found["no_cable"] or (verdicts and "NG" not in verdicts and "ERROR" in verdicts):
+            found["verdict"] = "ERROR"
+        elif "NG" in verdicts:
+            found["verdict"] = "NG"
+        elif verdicts:
+            found["verdict"] = "PASS"
+
+        # One picture for the camera, with what each check found drawn on it.
+        # A stripe check's frame is the camera's own; the object check's is
+        # evened out for matching, so it is used only when it is the one taken.
+        if pictures:
+            pictures.sort(key=lambda p: p[0] != "STRIPES")
+            img = pictures[0][1].frame
+            for name, result, verdict in pictures:
+                if name == "STRIPES":
+                    img = self.with_stripe_regions(result, img)
+                elif result.match_box:
+                    x, y, w, h = result.match_box
+                    box = np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+                                   np.float32)
+                    img = captures.outlined(img, [box], verdict)
+            found["frame"] = img
+            found["image"] = captures.save(img, tag, part_number, found["verdict"],
+                                           " + ".join(found["seen"]))
+        return found
+
     def start_camera_checks(self):
         """Check the part on both cameras, before its PLC test starts.
 
-        Camera 1 looks for missing parts with the check taught for the part
-        in Vision Settings; camera 2 checks the stripes. Both run on a worker
-        thread so the window keeps painting, and their verdicts show as soon
-        as they are in. A part with
-        nothing taught for a camera isn't checked on it: camera 1 then keeps
-        the PLC's verdict, and camera 2 shows OFF. Each camera's picture is
-        kept either way.
+        Each camera runs the checks taught for the part on it in Vision
+        Settings: its stripe check, its object check, or both. They run on a
+        worker thread so the window keeps painting, and the verdicts show as
+        soon as they are in. A part with nothing taught for a camera isn't
+        checked on it: camera 1 then keeps the PLC's verdict, and camera 2
+        shows OFF. Each camera's picture is kept either way.
         """
         if self.camera_check_running:
             return
@@ -2088,75 +2164,45 @@ class EOLTesterGUI:
         # result, so nothing from an earlier check carries over
         self.camera_checks_done = False
         self.cam1_by_app = False
+        self.no_cable = False
         if getattr(self, 'startingNGCableValidation', False) or \
                 getattr(self, 'endingNGCableValidation', False):
             return      # a known-bad cable is checked by the PLC alone, and not saved
-        cam1_on, cam2_on = self.camera_check_on(1), self.camera_check_on(2)
-        if not (cam1_on or cam2_on):
+        on = {number: self.camera_check_on(number) for number in (1, 2)}
+        if not any(on.values()):
             # Both cameras are off: neither judges the part, and camera 1
             # keeps the PLC's verdict
             self.cam2Result = "OFF"
-            self.update_cam2_status("OFF")
+            self.set_camera_status(2, "OFF")
             self.camera_checks_done = True
             return
 
         # A camera ticked off takes no picture and judges nothing: camera 1
         # then keeps the PLC's verdict, and camera 2 shows OFF
         part_number = self.partNumber
-        vision = VisionController()
-        check_cam1 = cam1_on and bool(part_number) and vision.has_model(part_number)
-        check_cam2 = cam2_on and bool(part_number) and stripe_check.has_model(part_number)
+        checks = {number: self.taught_checks(number, part_number) if on[number] else []
+                  for number in (1, 2)}
         self.cam1Image = self.cam2Image = None
         self.camera_check_running = True
-        self.cam1_by_app = check_cam1
-        if check_cam1:
-            self.cam1_view.set_status("CHECKING", self.SKY)
-        if check_cam2:
-            self.update_cam2_status("CHECKING")
+        self.cam1_by_app = bool(checks[1])
+        for number in (1, 2):
+            if checks[number]:
+                self.set_camera_status(number, "CHECKING")
         out = {}
 
         def work():
-            try:
-                if check_cam1:
-                    result = vision.inspect(part_number)
-                    out["cam1"] = result
-                    verdict = self.verdict_of(result)
-                    if result.frame is not None:
-                        outline = []
-                        if result.match_box:
-                            x, y, w, h = result.match_box
-                            outline = [np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
-                                                np.float32)]
-                        out["cam1_frame"] = captures.outlined(result.frame, outline, verdict)
-                        out["cam1_image"] = captures.save(result.frame, "CAM1", part_number,
-                                                          verdict, "", outline)
-                elif cam1_on:
-                    frame = self.grab_camera1()
-                    if frame is not None:
-                        out["cam1_frame"] = frame
-                        out["cam1_image"] = captures.save(frame, "CAM1", part_number, "")
-            except Exception as e:
-                out["cam1_error"] = str(e)
-            try:
-                if check_cam2:
-                    result = stripe_check.inspect(part_number)
-                    out["cam2"] = result
-                    verdict = self.verdict_of(result)
-                    if result.frame is not None:
-                        # The regions searched go on the picture, PASS or NG,
-                        # so the console, the NG pop-up and Work Data all show
-                        # them, with each group's stripes in its own verdict
-                        framed = self.with_stripe_regions(result)
-                        out["cam2_frame"] = framed
-                        out["cam2_image"] = captures.save(
-                            framed, "CAM2", part_number, verdict, result.seen)
-                elif cam2_on:
-                    frame = stripe_check.capture_frame()
-                    if frame is not None:
-                        out["cam2_frame"] = frame
-                        out["cam2_image"] = captures.save(frame, "CAM2", part_number, "OFF")
-            except Exception as e:
-                out["cam2_error"] = str(e)
+            for number in (1, 2):
+                tag = f"CAM{number}"
+                try:
+                    if checks[number]:
+                        out[number] = self.check_camera(number, checks[number], part_number)
+                    elif on[number]:
+                        frame = self.grab_camera(number)
+                        if frame is not None:
+                            out[number] = {"frame": frame, "image": captures.save(
+                                frame, tag, part_number, "" if number == 1 else "OFF")}
+                except Exception as e:
+                    out[number] = {"verdict": "ERROR", "problems": [str(e)]}
 
         worker = threading.Thread(target=work, daemon=True)
         worker.start()
@@ -2166,49 +2212,42 @@ class EOLTesterGUI:
                 self.root.after(50, wait)
                 return
             self.camera_check_running = False
-            self.cam1Image = out.get("cam1_image")
-            self.cam2Image = out.get("cam2_image")
+            found = {number: out.get(number, {}) for number in (1, 2)}
+            self.cam1Image = found[1].get("image")
+            self.cam2Image = found[2].get("image")
             # Hold what was judged on screen until the next part
-            self.cam1_view.hold(out.get("cam1_frame"))
-            self.cam2_view.hold(out.get("cam2_frame"))
+            for number in (1, 2):
+                self.camera_view(number).hold(found[number].get("frame"))
             problems = []
+            verdicts = {}
 
-            if check_cam1:
-                result = out.get("cam1")
-                self.cam1Result = self.verdict_of(result) if result else "ERROR"
-                fills = {"PASS": '#00FF00', "NG": '#FF0000', "ERROR": '#FFA500'}
-                self.cam1_view.set_status(self.cam1Result, fills[self.cam1Result])
-                if self.cam1Result != "PASS":
-                    problems.append(f"Camera 1 {self.cam1Result}: "
-                                    f"{result.error if result else out.get('cam1_error')}")
-                print(f"[CAM1] {part_number}: {self.cam1Result} "
-                      f"({result.error or 'part found' if result else out.get('cam1_error')})")
-
-            self.cam2_no_cable = False
-            if not check_cam2:
-                self.cam2Result = "OFF"
-            else:
-                result = out.get("cam2")
-                self.cam2Result = self.verdict_of(result) if result else "ERROR"
-                self.cam2_no_cable = bool(result and result.no_cable)
-                if self.cam2Result != "PASS":
-                    problems.append(f"Camera 2 {self.cam2Result}: "
-                                    f"{result.error if result else out.get('cam2_error')}")
-                print(f"[CAM2] {part_number}: {self.cam2Result} "
-                      f"({(result.seen or result.error) if result else out.get('cam2_error')})")
-            self.update_cam2_status(self.cam2Result)
+            for number in (1, 2):
+                if not checks[number]:
+                    continue
+                verdicts[number] = found[number].get("verdict", "ERROR")
+                self.set_camera_status(number, verdicts[number])
+                if verdicts[number] != "PASS":
+                    problems.append(f"Camera {number} {verdicts[number]}: "
+                                    + "; ".join(found[number].get("problems", [])))
+            if checks[1]:
+                self.cam1Result = verdicts[1]
+            self.cam2Result = verdicts.get(2, "OFF")
+            if not checks[2]:
+                self.set_camera_status(2, "OFF")
+            self.no_cable = any(found[n].get("no_cable") for n in (1, 2))
 
             # Say so at once; the part is failed when the test is saved
             if problems:
                 self.safe_update_message("  |  ".join(problems), "red")
-            ng = [(name, frame) for name, verdict, frame in (
-                      ("CAM1", self.cam1Result if check_cam1 else "", out.get("cam1_frame")),
-                      ("CAM2", self.cam2Result, out.get("cam2_frame")))
-                  if verdict == "NG"]
-            if self.cam2_no_cable:
-                self.show_camera_ng_popup([("CAM2", out.get("cam2_frame"))], "ERROR", "NO CABLE")
-            elif ng:
-                self.show_camera_ng_popup(ng)
+            if self.no_cable:
+                self.show_camera_ng_popup(
+                    [(f"CAM{n}", found[n].get("frame")) for n in (1, 2)
+                     if found[n].get("no_cable")], "ERROR", "NO CABLE")
+            else:
+                ng = [(f"CAM{n}", found[n].get("frame")) for n in (1, 2)
+                      if verdicts.get(n) == "NG"]
+                if ng:
+                    self.show_camera_ng_popup(ng)
             self.camera_checks_done = True
             then, self.after_camera_checks_do = self.after_camera_checks_do, None
             if then:

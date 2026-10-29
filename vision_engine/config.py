@@ -78,11 +78,11 @@ def save_camera_config(source: str, index: int, width: int, height: int):
 
 # ── Picture controls ────────────────────────────────────────────────────────
 # The camera's own saturation, exposure and white balance, set on the device
-# each time it is opened. Only camera 2 has them: its stripes are judged by
-# colour, and a camera left on auto washes pale stripes out and shifts their
-# tint from one part to the next.
+# each time it is opened. Both cameras have them: either can check stripes,
+# which are judged by colour, and a camera left on auto washes pale stripes
+# out and shifts their tint from one part to the next.
 
-TUNED_SOURCES = ("cam2",)
+TUNED_SOURCES = ("cam1", "cam2")
 PICTURE_CONTROLS = ("saturation", "exposure", "white_balance")
 _AUTO = "auto"
 
