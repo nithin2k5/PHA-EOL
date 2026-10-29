@@ -3697,7 +3697,13 @@ class EOLTesterGUI:
                 # ===================================================================
                 print("⏳ Waiting for PLC to return to pull1 state before starting test...")
                 self.wait_for_pull1_and_start_test()
-                
+
+                # The lot size comes first: the cursor waits in its box, with
+                # any size carried over selected so typing replaces it
+                self.lot_size_entry.focus_set()
+                self.lot_size_entry.select_range(0, tk.END)
+                self.lot_size_entry.icursor(tk.END)
+
                 # The ALC code stays on show, read-only, while its part is
                 # loaded; releasing the part clears it for the next login
                 
