@@ -33,6 +33,9 @@ def get_config(**overrides):
         'user': USER,
         'password': PASSWORD,
         'database': DATABASE,
+        # The driver's own Python code, not its C extension: on the line PC
+        # the C extension crashes the whole program while connecting
+        'use_pure': True,
     }
     config.update(overrides)
     return config
